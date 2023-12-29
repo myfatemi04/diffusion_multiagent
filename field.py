@@ -43,48 +43,53 @@ class Heatmap:
         self.graph = G
 
         # Use central approximation
-        dEdx = (data[2:, :] - data[:-2, :]) / 2
-        dEdy = (data[:, 2:] - data[:, :-2]) / 2
-        dEdx = np.pad(dEdx, ((1, 1), (0, 0)))
-        dEdy = np.pad(dEdy, ((0, 0), (1, 1)))
-        self.gradient_magnitude = np.pad(np.sqrt(dEdx**2 + dEdy**2), 1)
+        dataX = np.pad(data, ((1, 1), (0, 0)), mode='edge')
+        dataY = np.pad(data, ((0, 0), (1, 1)), mode='edge')
+        self.dEdx = (dataX[2:, :] - dataX[:-2, :]) / 2
+        self.dEdy = (dataY[:, 2:] - dataY[:, :-2]) / 2
+        self.gradient_magnitude = self.dEdx**2 + self.dEdy**2
+        print(self.gradient_magnitude.min(), self.gradient_magnitude.max())
 
         for i in range(M):
             for j in range(N):
                 if i + 1 < M:
-                    G.edges[(i, j), (i+1, j)]['weight'] = max(noise[i][j], noise[i + 1][j])
-                    G.edges[(i+1, j), (i, j)]['weight'] = max(noise[i][j], noise[i + 1][j])
+                    G.edges[(i, j), (i+1, j)]['weight'] = max(self.gradient_magnitude[i][j], self.gradient_magnitude[i + 1][j]) + 0
+                    G.edges[(i+1, j), (i, j)]['weight'] = max(self.gradient_magnitude[i][j], self.gradient_magnitude[i + 1][j]) + 0
 
                 if j + 1 < N:
-                    G.edges[(i, j), (i, j+1)]['weight'] = max(noise[i][j], noise[i][j + 1])
-                    G.edges[(i, j+1), (i, j)]['weight'] = max(noise[i][j], noise[i][j + 1])
+                    G.edges[(i, j), (i, j+1)]['weight'] = max(self.gradient_magnitude[i][j], self.gradient_magnitude[i][j + 1]) + 0
+                    G.edges[(i, j+1), (i, j)]['weight'] = max(self.gradient_magnitude[i][j], self.gradient_magnitude[i][j + 1]) + 0
 
     def least_cost_path(self, start, goal):
-        return nx.dijkstra_path(self.graph, start, goal)
+        return nx.astar_path(self.graph, start, goal)
 
-noise = generate_perlin_noise_2d((100, 100), (5, 5))
+width = 400
+height = 400
+noise = generate_perlin_noise_2d((width, height), (8, 8))
 noise -= noise.min()
+noise = np.maximum(noise, 0.3)
 hm = Heatmap(noise)
 
 # Question: What is the shortest path from the top left to the bottom right?
 
-plt.subplot(1, 2, 1)
-plt.imshow(hm.gradient_magnitude)
+ax1 = plt.subplot(1, 2, 1)
+gm = hm.gradient_magnitude - hm.gradient_magnitude.min()
+gm /= gm.max()
+plt.imshow(gm, cmap='viridis')
 plt.subplot(1, 2, 2)
 plt.imshow(hm.data, cmap='gist_earth', vmin=-0.5)
-plt.show()
 
 a,b = 0,0
 c,d = 99,99
 # Get shortest path
-fig = plt.figure()
-plt.imshow(noise, cmap='gist_earth', vmin=-0.5)
+fig = plt.gcf()
 path: list[tuple[int, int]] = hm.least_cost_path((a, b), (c, d)) # type: ignore
 contour = plt.plot([x[1] for x in path], [x[0] for x in path], color='red', linewidth=2)
+contour2 = ax1.plot([x[1] for x in path], [x[0] for x in path], color='red', linewidth=2)
 
 # From https://matplotlib.org/stable/users/explain/figure/event_handling.html
 def onclick(event):
-    global contour
+    global contour, contour2
     x = int(event.xdata)
     y = int(event.ydata)
     path: list[tuple[int, int]] = hm.least_cost_path((0, 0), (int(y), int(x))) # type: ignore
@@ -93,9 +98,12 @@ def onclick(event):
         cost += hm.graph.edges[(path[i], path[i+1])]['weight']
     contour[0].remove()
     contour = plt.plot([x[1] for x in path], [x[0] for x in path], color='red', linewidth=2)
+    contour2[0].remove()
+    contour2 = ax1.plot([x[1] for x in path], [x[0] for x in path], color='red', linewidth=2)
     fig.canvas.draw()
     print(cost)
 
 cid = fig.canvas.mpl_connect('button_press_event', onclick)
+plt.tight_layout()
 plt.show()
 
