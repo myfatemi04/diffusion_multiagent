@@ -75,8 +75,9 @@ class AgentSolutionState:
             received_messages_from.add(them)
 
             # Update time vector
-            for neighbor in message.neighbors:
-                Snext[neighbor.agent_id] = max(Snext[neighbor.agent_id], message.s[neighbor.agent_id])
+            for agent_id in self.agents:
+                if agent_id != me:
+                    Snext[agent_id] = max(Snext[agent_id], message.s[agent_id])
             Snext[them] = timestamp
 
             for task in self.tasks:
@@ -400,7 +401,7 @@ def render_agents(agents: list[AgentSolutionState], tasks: dict[str, Task]):
 def solve_cbba():
     import random
 
-    random.seed(0)
+    random.seed(1)
 
     def random_position():
         return Position(
@@ -408,9 +409,9 @@ def solve_cbba():
             y=random.random(),
         )
 
-    n_agents = 3
+    n_agents = 50
     max_bundle_size = 2
-    n_tasks = n_agents * 4
+    n_tasks = n_agents * max_bundle_size
 
     agent_ids = [
         f'agent_{i}' for i in range(1, n_agents + 1)
@@ -420,12 +421,12 @@ def solve_cbba():
     ]
     tasks = {}
     for task_id in task_ids:
-        if random.random() < 0.5:
+        if random.random() < 0.4:
             # High-value, front line-ish tasks
             tasks[task_id] = Task(
                 id=task_id,
-                value=1,
-                decay_rate=0.9,
+                value=2.0,
+                decay_rate=0.2,
                 position=Position(
                     x=random.random() * 0.2 + 0.8,
                     y=random.random(),
@@ -435,7 +436,7 @@ def solve_cbba():
             # Lower-value, auxiliary tasks
             tasks[task_id] = Task(
                 id=task_id,
-                value=0.1,
+                value=1.0,
                 decay_rate=0.1,
                 position=Position(
                     x=random.random() * 0.6 + 0.2,
@@ -477,10 +478,9 @@ def solve_cbba():
         raise ValueError(f"Unknown message-passing type {mp_type}")
 
     # display_agents(agents)
-    for timestep in range(80):
+    convergence_streak = 0
+    for timestep in range(1000 + n_agents):
         rebuilds: list[AgentSolutionState] = []
-        print(f"Running iteration {timestep + 1} of message-passing algorithm.")
-
         agents_order = agents.copy()
         random.shuffle(agents_order)
 
@@ -506,13 +506,20 @@ def solve_cbba():
                 agent.build_bundle(max_bundle_size)
         
         if len(rebuilds) == 0:
-            print("Converged!")
-            break
-
-        # Show the existing assignments
-        print("Rebuilds required:", [agent.agent_id for agent in rebuilds])
+            # Run algorithm at least n_agents more times to ensure that communication is complete.
+            convergence_streak += 1
+            print(f"[Step {timestep}] No disagreements ({convergence_streak} / {n_agents})")
+            if convergence_streak >= n_agents:
+                break
+        else:
+            # Show the existing assignments
+            print(f"[Step {timestep}]: {len(rebuilds)} disagreements.")
+            convergence_streak = 0
     else:
-        print("Did not converge.")
+        if convergence_streak > 0:
+            print(f"[Result]: Incomplete convergence: {convergence_streak} / {n_agents}")
+        else:
+            print("[Result]: Did not converge to conflict-free solution.")
 
     assigned_tasks = set()
     for agent in agents:
