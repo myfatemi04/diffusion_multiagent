@@ -10,10 +10,10 @@ class Message:
     y: dict[str, float] # `sender_id`'s best knowledge of the bids for each task
     z: dict[str, str | None] # `sender_id`'s best knowledge of the assignment of tasks to agents
     s: dict[str, float] # timestamps when the last message was received; keyed by agent id
-    neighbors: list
+    neighbors: list['AgentSolutionState']
 
 class AgentSolutionState:
-    def __init__(self, tasks: list, agents: list, agent_id: str):
+    def __init__(self, tasks: list[str], agents: list[str], agent_id: str):
         self.bundle = []
         self.path = []
         self.y: dict[str, float] = {task: 0 for task in tasks}
@@ -28,8 +28,8 @@ class AgentSolutionState:
 
     def ingest_messages(self, messages: list[Message], timestamp: float):
         """
-        Process incoming messages and decide whether bundle needs to
-        be reconstructed.
+        Process incoming messages.
+        Returns a Boolean indicating whether bundle needs to be reconstructed.
         """
         me = self.agent_id
         received_messages_from = set()
@@ -44,7 +44,7 @@ class AgentSolutionState:
 
             # Update time vector
             for neighbor in message.neighbors:
-                Snext[neighbor] = max(Snext[neighbor], message.s[neighbor])
+                Snext[neighbor.agent_id] = max(Snext[neighbor.agent_id], message.s[neighbor.agent_id])
             Snext[them] = timestamp
 
             for task in self.tasks:
@@ -163,10 +163,31 @@ class AgentSolutionState:
                             Znext[task] = None
                             Ynext[task] = 0
 
-        # Update the agent's state
-        self.z = Znext
-        self.y = Ynext
-        self.s = Snext
+        # Update the agent's state.
+        # Check for conflicts.
+        earliest_conflict_index = -1
+        for i, bundle_task in enumerate(self.bundle):
+            if self.z[bundle_task] != Znext[bundle_task] or self.y[bundle_task] != Ynext[bundle_task]:
+                earliest_conflict_index = i
+                break
+
+        # If we experience conflicts, we need to update y and z.
+        # Additionally, we need to rebuild the bundle.
+        if earliest_conflict_index != -1:
+            self.bundle, self.path, self.y, self.z = release_items_added_after_index(
+                self.tasks,
+                self.bundle,
+                self.path,
+                Ynext, Znext,
+                earliest_conflict_index
+            )
+            self.s = Snext
+            return True
+        else:
+            self.s = Snext
+            self.y = Ynext
+            self.z = Znext
+            return False
 
     def calculate_best_path_insertion_point(self, path, task):
         current_path_value = self.calculate_path_value(path)
@@ -224,25 +245,74 @@ class AgentSolutionState:
         self.bundle = bundle_next
         self.path = path_next
 
-    def release_items_added_after_index(self, index):
-        # Remove items that occur after `index`
-        Bnext = self.bundle[:index]
-        # Preserve order of self.path
-        Pnext = [task for task in self.path if task in Bnext]
-        # Reset y-values for tasks that are no longer in the bundle
-        Ynext = {
-            task: self.y[task] if task in Bnext else 0.0
-            for task in self.tasks
-        }
-        # Reset z-values for tasks that are no longer in the bundle
-        Znext = {
-            task: self.z[task] if task in Bnext else None
-            for task in self.tasks
-        }
-        self.z = Znext
-        self.y = Ynext
-        self.bundle = Bnext
-        self.path = Pnext
+def release_items_added_after_index(tasks: list[str], bundle: list[str], path: list[str], y: dict[str, float], z: dict[str, str | None], index: int):
+    # Remove items that occur after `index`
+    Bnext = bundle[:index]
+    # Preserve order of self.path
+    Pnext = [task for task in path if task in Bnext]
+    # Reset y-values for tasks that are no longer in the bundle
+    Ynext = {
+        task: y[task] if task in Bnext else 0.0
+        for task in tasks
+    }
+    # Reset z-values for tasks that are no longer in the bundle
+    Znext = {
+        task: z[task] if task in Bnext else None
+        for task in tasks
+    }
+    return (Bnext, Pnext, Ynext, Znext)
 
 def solve_cbba():
-    pass
+    agent_ids = [
+        f'agent_{i}' for i in range(1, 11)
+    ]
+    task_ids = [
+        f'task_{i}' for i in range(1, 11)
+    ]
+    agents = [
+        AgentSolutionState(task_ids, agent_ids, agent_id)
+        for agent_id in agent_ids
+    ]
+    agents_by_id = {
+        agent.agent_id: agent
+        for agent in agents
+    }
+    # Create initial bids
+    max_bundle_size = 1
+    for agent in agents:
+        agent.build_bundle(max_bundle_size)
+    
+    # Iterative message-passing algorithm
+    # Global communication graph
+    adjacency_matrix = {
+        agent.agent_id: agents
+        for agent in agents
+    }
+    for timestep in range(100):
+        has_revisions = False
+        for agent in agents:
+            # Collect messages
+            inbox = []
+            for neighbor_id in agent.agents:
+                if neighbor_id == agent.agent_id:
+                    continue
+                neighbor = agents_by_id[neighbor_id]
+                inbox.append(Message(
+                    sender_id=neighbor_id,
+                    y=neighbor.y,
+                    z=neighbor.z,
+                    s=neighbor.s,
+                    neighbors=adjacency_matrix[neighbor.agent_id]
+                ))
+            # Receive messages
+            needs_revisions = agent.ingest_messages(inbox, timestep)
+            if needs_revisions:
+                # Rebuild bundle
+                agent.build_bundle(max_bundle_size)
+                has_revisions = True
+        
+        if not has_revisions:
+            print("Converged!")
+            break
+    else:
+        print("Did not converge.")
