@@ -3,6 +3,8 @@
 
 import dataclasses
 
+import numpy as np
+
 
 @dataclasses.dataclass
 class Position:
@@ -43,11 +45,12 @@ class AgentSolutionState:
     def calculate_path_value(self, path: list[str]) -> float:
         prev_pos = self.position
         value = 0
+        total_dist = 0
 
         for i in range(len(path)):
             task = self.tasks[path[i]]
-            dist = ((prev_pos.x - task.position.x)**2 + (prev_pos.y - task.position.y)**2)**0.5
-            value = value - dist + task.value
+            total_dist += ((prev_pos.x - task.position.x)**2 + (prev_pos.y - task.position.y)**2)**0.5
+            value += task.value * np.exp(-total_dist)
             prev_pos = task.position
 
         return value
@@ -91,17 +94,17 @@ class AgentSolutionState:
 
                         # If the sender outbids me, they get the task.
                         if message.y[task] > self.y[task]:
-                            self.debug("... but they outbid me.")
+                            self.debug("... but they outbid me. Updating.")
 
                             Znext[task] = them
                             Ynext[task] = message.y[task]
                         else:
-                            self.debug("... and I outbid them.")
+                            self.debug("... and I outbid them. No change.")
 
                             # If I outbid them, I keep the task.
                             pass
                     elif (my_believed_assignee == them) or (my_believed_assignee is None):
-                        self.debug("... and I believe they are assigned task.")
+                        self.debug("... and I believe they are assigned task, or I do not have a prior belief. Updating.")
 
                         # If they believe they have the task, and so do I, they get it.
                         # If they believe they have the task, and I do not think
@@ -116,7 +119,7 @@ class AgentSolutionState:
                         # they take the task (because they have more up-to-date information).
                         # Or, if the sender outbids *m*, they take the task.
                         if message.s[my_believed_assignee] > self.s[my_believed_assignee] or message.y[task] > self.y[task]:
-                            self.debug("... but they outbid", my_believed_assignee)
+                            self.debug(f"... but they outbid {my_believed_assignee}. Updating.")
 
                             Znext[task] = them
                             Ynext[task] = message.y[task]
@@ -130,16 +133,16 @@ class AgentSolutionState:
 
                     if my_believed_assignee == me:
                         # I also believe I have the task. No change.
-                        self.debug("... and I believe I am assigned task.")
+                        self.debug("... and I believe I am assigned task. No change.")
                         pass
                     elif my_believed_assignee == them:
                         # I believe they have the task. Reset.
-                        self.debug("... and I believe they are assigned task.")
+                        self.debug("... and I believe they are assigned task. Resetting.")
                         Znext[task] = None
                         Ynext[task] = 0
                     elif my_believed_assignee is None:
                         # I believe nobody has the task. No change.
-                        self.debug("... and I believe nobody is assigned task.")
+                        self.debug("... and I believe nobody is assigned task. No change.")
                         pass
                     else:
                         # I believe neither of has the task, and instead *m* has the task.
@@ -147,11 +150,11 @@ class AgentSolutionState:
                         # I reset.
                         self.debug("... and I believe", my_believed_assignee, "is assigned task.")
                         if message.s[my_believed_assignee] > self.s[my_believed_assignee]:
-                            self.debug("... but they received a message from", my_believed_assignee, "more recently than I did.")
+                            self.debug("... but they received a message from", my_believed_assignee, "more recently than I did. Resetting.")
                             Znext[task] = None
                             Ynext[task] = 0
                         else:
-                            self.debug("... but I have the most recent information about", my_believed_assignee, "being assigned task.")
+                            self.debug("... and I have the most recent information about", my_believed_assignee, "being assigned task.")
 
                 # Row 4.
                 # Sender believes nobody has the task.
@@ -250,14 +253,14 @@ class AgentSolutionState:
         # Check for conflicts.
         earliest_conflict_index = -1
         for i, bundle_task in enumerate(self.bundle):
-            if self.z[bundle_task] != Znext[bundle_task] or self.y[bundle_task] != Ynext[bundle_task]:
+            if self.z[bundle_task] != Znext[bundle_task]:
                 earliest_conflict_index = i
                 break
 
         # If we experience conflicts, we need to update y and z.
         # Additionally, we need to rebuild the bundle.
         if earliest_conflict_index != -1:
-            self.debug("Conflicts detected. Rebuilding bundle.")
+            self.debug("Conflicts detected. Rebuilding bundle starting at", earliest_conflict_index)
             self.bundle, self.path, self.y, self.z = release_items_added_after_index(
                 self.tasks,
                 self.bundle,
@@ -269,6 +272,8 @@ class AgentSolutionState:
             return True
         else:
             self.debug("No conflicts detected.")
+            self.bundle = self.bundle
+            self.path = self.path
             self.s = Snext
             self.y = Ynext
             self.z = Znext
@@ -288,8 +293,10 @@ class AgentSolutionState:
         return (best_insertion_point, best_marginal_value)
 
     def debug(self, *args):
-        # print(f"[agent {self.agent_id}]", *args)
-        pass
+        if self.agent_id not in ['agent_1', 'agent_3', 'agent_7']:
+            return
+        
+        print(f"[agent {self.agent_id}]", *args)
 
     def build_bundle(self, max_bundle_size: int):
         """
@@ -310,11 +317,11 @@ class AgentSolutionState:
                 n, marginal_value = self.calculate_best_path_insertion_point(path_next, task)
                 bid_value = self.y[task]
 
+                assert marginal_value > 0
+
                 # I am outbid.
                 if bid_value >= marginal_value:
                     continue
-
-                # Ynext[task] = marginal_value
                 
                 if marginal_value > best_task_marginal_value:
                     best_task = task
@@ -323,6 +330,7 @@ class AgentSolutionState:
             
             if best_task is None:
                 # I cannot outbid anyone for any task.
+                print("no best task found")
                 break
             else:
                 assert best_task_insertion_point is not None, "Inconsistency between best_task and best_task_insertion_point"
@@ -334,6 +342,7 @@ class AgentSolutionState:
                 Ynext[best_task] = best_task_marginal_value
                 Znext[best_task] = self.agent_id
         
+        self.s = self.s
         self.z = Znext
         self.y = Ynext
         self.bundle = bundle_next
@@ -399,9 +408,9 @@ def solve_cbba():
             y=random.random(),
         )
 
-    n_agents = 50
-    n_tasks = 50
-    max_bundle_size = 1
+    n_agents = 10
+    n_tasks = n_agents * 2
+    max_bundle_size = 2
 
     agent_ids = [
         f'agent_{i}' for i in range(1, n_agents + 1)
@@ -412,7 +421,7 @@ def solve_cbba():
     tasks = {
         task_id: Task(
             id=task_id,
-            value=5,
+            value=1,
             position=random_position(),
         )
         for task_id in task_ids
@@ -448,15 +457,17 @@ def solve_cbba():
     else:
         raise ValueError(f"Unknown message-passing type {mp_type}")
 
-    display_agents(agents)
+    # display_agents(agents)
     for timestep in range(40):
-        n_rebuilds_required = 0
+        rebuilds: list[AgentSolutionState] = []
         print(f"Running iteration {timestep + 1} of message-passing algorithm.")
 
-        has_revisions = False
-        for agent in agents:
+        agents_order = agents.copy()
+        random.shuffle(agents_order)
+
+        for agent in agents_order:
             # Collect messages
-            inbox = []
+            inbox: list[Message] = []
             for neighbor in adjacency_matrix[agent.agent_id]:
                 neighbor_id = neighbor.agent_id
                 if neighbor == agent.agent_id:
@@ -471,19 +482,16 @@ def solve_cbba():
             # Receive messages
             needs_revisions = agent.ingest_messages(inbox, timestep)
             if needs_revisions:
-                n_rebuilds_required += 1
+                rebuilds.append(agent)
                 # Rebuild bundle
                 agent.build_bundle(max_bundle_size)
-                has_revisions = True
         
-        render_agents(agents, tasks)
-
-        if not has_revisions:
+        if len(rebuilds) == 0:
             print("Converged!")
             break
 
         # Show the existing assignments
-        print(n_rebuilds_required, "rebuilds required.")
+        print("Rebuilds required:", [agent.agent_id for agent in rebuilds])
     else:
         print("Did not converge.")
 
@@ -494,6 +502,23 @@ def solve_cbba():
     
     unassigned_tasks = set(tasks.keys()) - assigned_tasks
     print(f"Unassigned tasks: {unassigned_tasks}")
+
+    render_agents(agents, tasks)
+
+    # Using Linear Sum Assignment
+    import numpy as np
+    import scipy.optimize
+    mat = np.zeros((n_agents, n_tasks))
+    for i, agent in enumerate(agents):
+        for j, task_id in enumerate(task_ids):
+            mat[i, j] = -agent.calculate_path_value([task_id])
+    
+    row_ind, col_ind = scipy.optimize.linear_sum_assignment(mat)
+    print(row_ind, col_ind)
+    for i, agent in enumerate(agents):
+        agent.path = [task_ids[col_ind[i]]]
+        agent.bundle = [task_ids[col_ind[i]]]
+    render_agents(agents, tasks)
     
 if __name__ == '__main__':
     solve_cbba()
