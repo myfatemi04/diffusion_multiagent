@@ -293,10 +293,8 @@ class AgentSolutionState:
         return (best_insertion_point, best_marginal_value)
 
     def debug(self, *args):
-        if self.agent_id not in ['agent_1', 'agent_3', 'agent_7']:
-            return
-        
-        print(f"[agent {self.agent_id}]", *args)
+        # print(f"[agent {self.agent_id}]", *args)
+        pass
 
     def build_bundle(self, max_bundle_size: int):
         """
@@ -400,7 +398,7 @@ def render_agents(agents: list[AgentSolutionState], tasks: dict[str, Task]):
 def solve_cbba():
     import random
 
-    random.seed(1)
+    random.seed(0)
 
     def random_position():
         return Position(
@@ -408,9 +406,9 @@ def solve_cbba():
             y=random.random(),
         )
 
-    n_agents = 10
-    n_tasks = n_agents * 2
-    max_bundle_size = 2
+    n_agents = 6
+    max_bundle_size = 20
+    n_tasks = n_agents * max_bundle_size
 
     agent_ids = [
         f'agent_{i}' for i in range(1, n_agents + 1)
@@ -418,16 +416,30 @@ def solve_cbba():
     task_ids = [
         f'task_{i}' for i in range(1, n_tasks + 1)
     ]
-    tasks = {
-        task_id: Task(
-            id=task_id,
-            value=1,
-            position=random_position(),
-        )
-        for task_id in task_ids
-    }
+    tasks = {}
+    for task_id in task_ids:
+        if random.random() < 0.8:
+            # High-value, front line-ish tasks
+            tasks[task_id] = Task(
+                id=task_id,
+                value=5,
+                position=Position(
+                    x=random.random() * 0.2 + 0.8,
+                    y=random.random(),
+                ),
+            )
+        else:
+            # Lower-value, auxiliary tasks
+            tasks[task_id] = Task(
+                id=task_id,
+                value=1,
+                position=random_position(),
+            )
     agents = [
-        AgentSolutionState(random_position(), tasks, agent_ids, agent_id)
+        AgentSolutionState(Position(
+            x=random.random() * 0.5,
+            y=random.random(),
+        ), tasks, agent_ids, agent_id)
         for agent_id in agent_ids
     ]
     agents_by_id = {
@@ -458,7 +470,7 @@ def solve_cbba():
         raise ValueError(f"Unknown message-passing type {mp_type}")
 
     # display_agents(agents)
-    for timestep in range(40):
+    for timestep in range(80):
         rebuilds: list[AgentSolutionState] = []
         print(f"Running iteration {timestep + 1} of message-passing algorithm.")
 
