@@ -224,5 +224,25 @@ class AgentSolutionState:
         self.bundle = bundle_next
         self.path = path_next
 
+    def release_items_added_after_index(self, index):
+        # Remove items that occur after `index`
+        Bnext = self.bundle[:index]
+        # Preserve order of self.path
+        Pnext = [task for task in self.path if task in Bnext]
+        # Reset y-values for tasks that are no longer in the bundle
+        Ynext = {
+            task: self.y[task] if task in Bnext else 0.0
+            for task in self.tasks
+        }
+        # Reset z-values for tasks that are no longer in the bundle
+        Znext = {
+            task: self.z[task] if task in Bnext else None
+            for task in self.tasks
+        }
+        self.z = Znext
+        self.y = Ynext
+        self.bundle = Bnext
+        self.path = Pnext
+
 def solve_cbba():
     pass
