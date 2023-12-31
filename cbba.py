@@ -16,14 +16,14 @@ class AgentSolutionState:
     def __init__(self, tasks: list, agents: list, agent_id: str):
         self.bundle = []
         self.path = []
-        self.y = {}
-        self.z = {}
-        self.s = {}
+        self.y: dict[str, float | None] = {task: None for task in tasks}
+        self.z: dict[str, str | None] = {task: None for task in tasks}
+        self.s: dict[str, float] = {agent: 0 for agent in agents}
         self.tasks = tasks
         self.agents = agents
         self.agent_id = agent_id
 
-    def calculate_path_value(self, path):
+    def calculate_path_value(self, path) -> float:
         raise NotImplementedError()
 
     def ingest_messages(self, messages: list[Message], timestamp: float):
@@ -169,3 +169,62 @@ class AgentSolutionState:
         self.z = Znext
         self.y = Ynext
         self.s = Snext
+
+    def calculate_best_path_insertion_point(self, path, task):
+        current_path_value = self.calculate_path_value(path)
+        best_marginal_value = 0
+        best_insertion_point = -1
+        for i in range(len(path) + 1):
+            path_next = path[:i] + [task] + path[i:]
+            marginal_value = self.calculate_path_value(path_next) - current_path_value
+            if marginal_value > best_marginal_value:
+                best_marginal_value = marginal_value
+                best_insertion_point  = i
+
+        return (best_insertion_point, best_marginal_value)
+
+    def build_bundle(self, max_bundle_size: int):
+        """
+        Creates a bundle.
+        """
+        Znext = self.z.copy()
+        Ynext = self.y.copy()
+        bundle_next = self.bundle.copy()
+        path_next = self.path.copy()
+        while len(bundle_next) < max_bundle_size:
+            best_task = None
+            best_task_marginal_value = 0
+            best_task_insertion_point = None
+            for task in self.tasks:
+                if task in bundle_next:
+                    continue
+                
+                n, marginal_value = self.calculate_best_path_insertion_point(path_next, task)
+                bid_value = self.y[task]
+                # I am outbid.
+                if bid_value is not None and bid_value >= marginal_value:
+                    continue
+                
+                if marginal_value > best_task_marginal_value:
+                    best_task = task
+                    best_task_marginal_value = marginal_value
+                    best_task_insertion_point = n
+            
+            if best_task is None:
+                # I cannot outbid anyone for any task.
+                break
+            else:
+                assert best_task_insertion_point is not None, "Inconsistency between best_task and best_task_insertion_point"
+
+                bundle_next.append(best_task)
+                path_next.insert(best_task_insertion_point, best_task)
+                Ynext[best_task] = best_task_marginal_value
+                Znext[best_task] = self.agent_id
+        
+        self.z = Znext
+        self.y = Ynext
+        self.bundle = bundle_next
+        self.path = path_next
+
+def solve_cbba():
+    pass
