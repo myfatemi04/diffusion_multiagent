@@ -258,7 +258,6 @@ class AgentSolutionState:
         # Additionally, we need to rebuild the bundle.
         if earliest_conflict_index != -1:
             self.debug("Conflicts detected. Rebuilding bundle.")
-            self.debug(Ynext, Znext, self.bundle)
             self.bundle, self.path, self.y, self.z = release_items_added_after_index(
                 self.tasks,
                 self.bundle,
@@ -266,7 +265,6 @@ class AgentSolutionState:
                 Ynext, Znext,
                 earliest_conflict_index
             )
-            self.debug(self.y, self.z)
             self.s = Snext
             return True
         else:
@@ -290,7 +288,8 @@ class AgentSolutionState:
         return (best_insertion_point, best_marginal_value)
 
     def debug(self, *args):
-        print(f"[agent {self.agent_id}]", *args)
+        # print(f"[agent {self.agent_id}]", *args)
+        pass
 
     def build_bundle(self, max_bundle_size: int):
         """
@@ -369,10 +368,30 @@ def display_agents(agents: list[AgentSolutionState]):
         print(f"  S: {agent.s}")
         print()
 
+def render_agents(agents: list[AgentSolutionState], tasks: dict[str, Task]):
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(10, 10))
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
+    for agent in agents:
+        plt.scatter(agent.position.x, agent.position.y, c='b')
+        plt.annotate(agent.agent_id, (agent.position.x, agent.position.y))
+    for task in tasks.values():
+        plt.scatter(task.position.x, task.position.y, c='r')
+        plt.annotate(task.id, (task.position.x, task.position.y))
+    for agent in agents:
+        prev_pos = agent.position
+        for task_id in agent.path:
+            task = tasks[task_id]
+            plt.plot([prev_pos.x, task.position.x], [prev_pos.y, task.position.y], c='b')
+            prev_pos = task.position
+    plt.show()
+
 def solve_cbba():
     import random
 
-    random.seed(0)
+    random.seed(1)
 
     def random_position():
         return Position(
@@ -380,11 +399,15 @@ def solve_cbba():
             y=random.random(),
         )
 
+    n_agents = 50
+    n_tasks = 50
+    max_bundle_size = 1
+
     agent_ids = [
-        f'agent_{i}' for i in range(1, 3)
+        f'agent_{i}' for i in range(1, n_agents + 1)
     ]
     task_ids = [
-        f'task_{i}' for i in range(1, 3)
+        f'task_{i}' for i in range(1, n_tasks + 1)
     ]
     tasks = {
         task_id: Task(
@@ -403,28 +426,41 @@ def solve_cbba():
         for agent in agents
     }
     # Create initial bids
-    max_bundle_size = 1
     for agent in agents:
         agent.build_bundle(max_bundle_size)
     
     # Iterative message-passing algorithm
+    mp_type = 'global'
     # Global communication graph
-    adjacency_matrix = {
-        agent.agent_id: agents
-        for agent in agents
-    }
+    if mp_type == 'global':
+        adjacency_matrix = {
+            agent.agent_id: agents
+            for agent in agents
+        }
+    # Cyclic communication graph
+    elif mp_type == 'cyclic':
+        adjacency_matrix = {}
+        for i in range(len(agents)):
+            adjacency_matrix[agent_ids[i]] = [
+                agents[(i - 1) % len(agents)],
+                agents[(i + 1) % len(agents)]
+            ]
+    else:
+        raise ValueError(f"Unknown message-passing type {mp_type}")
+
     display_agents(agents)
-    for timestep in range(2):
+    for timestep in range(40):
+        n_rebuilds_required = 0
         print(f"Running iteration {timestep + 1} of message-passing algorithm.")
 
         has_revisions = False
         for agent in agents:
             # Collect messages
             inbox = []
-            for neighbor_id in agent.agents:
-                if neighbor_id == agent.agent_id:
+            for neighbor in adjacency_matrix[agent.agent_id]:
+                neighbor_id = neighbor.agent_id
+                if neighbor == agent.agent_id:
                     continue
-                neighbor = agents_by_id[neighbor_id]
                 inbox.append(Message(
                     sender_id=neighbor_id,
                     y=neighbor.y,
@@ -435,18 +471,29 @@ def solve_cbba():
             # Receive messages
             needs_revisions = agent.ingest_messages(inbox, timestep)
             if needs_revisions:
+                n_rebuilds_required += 1
                 # Rebuild bundle
                 agent.build_bundle(max_bundle_size)
                 has_revisions = True
         
+        render_agents(agents, tasks)
+
         if not has_revisions:
             print("Converged!")
             break
 
-        display_agents(agents)
-        input("Press enter to run next iteration.")
+        # Show the existing assignments
+        print(n_rebuilds_required, "rebuilds required.")
     else:
         print("Did not converge.")
+
+    assigned_tasks = set()
+    for agent in agents:
+        print(f"Agent {agent.agent_id} is assigned tasks {agent.path}")
+        assigned_tasks.update(agent.path)
+    
+    unassigned_tasks = set(tasks.keys()) - assigned_tasks
+    print(f"Unassigned tasks: {unassigned_tasks}")
     
 if __name__ == '__main__':
     solve_cbba()
