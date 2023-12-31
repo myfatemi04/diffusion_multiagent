@@ -15,6 +15,7 @@ class Position:
 class Task:
     id: str
     value: float
+    decay_rate: float
     position: Position
 
 @dataclasses.dataclass
@@ -50,7 +51,7 @@ class AgentSolutionState:
         for i in range(len(path)):
             task = self.tasks[path[i]]
             total_dist += ((prev_pos.x - task.position.x)**2 + (prev_pos.y - task.position.y)**2)**0.5
-            value += task.value * np.exp(-total_dist)
+            value += task.value * np.exp(-total_dist * task.decay_rate)
             prev_pos = task.position
 
         return value
@@ -389,9 +390,10 @@ def render_agents(agents: list[AgentSolutionState], tasks: dict[str, Task]):
         plt.annotate(task.id, (task.position.x, task.position.y))
     for agent in agents:
         prev_pos = agent.position
-        for task_id in agent.path:
+        for i, task_id in enumerate(agent.path):
             task = tasks[task_id]
-            plt.plot([prev_pos.x, task.position.x], [prev_pos.y, task.position.y], c='b')
+            cm = plt.get_cmap('viridis')
+            plt.plot([prev_pos.x, task.position.x], [prev_pos.y, task.position.y], c=cm(i / len(agent.path)))
             prev_pos = task.position
     plt.show()
 
@@ -406,9 +408,9 @@ def solve_cbba():
             y=random.random(),
         )
 
-    n_agents = 6
-    max_bundle_size = 20
-    n_tasks = n_agents * max_bundle_size
+    n_agents = 3
+    max_bundle_size = 2
+    n_tasks = n_agents * 4
 
     agent_ids = [
         f'agent_{i}' for i in range(1, n_agents + 1)
@@ -418,11 +420,12 @@ def solve_cbba():
     ]
     tasks = {}
     for task_id in task_ids:
-        if random.random() < 0.8:
+        if random.random() < 0.5:
             # High-value, front line-ish tasks
             tasks[task_id] = Task(
                 id=task_id,
-                value=5,
+                value=1,
+                decay_rate=0.9,
                 position=Position(
                     x=random.random() * 0.2 + 0.8,
                     y=random.random(),
@@ -432,12 +435,16 @@ def solve_cbba():
             # Lower-value, auxiliary tasks
             tasks[task_id] = Task(
                 id=task_id,
-                value=1,
-                position=random_position(),
+                value=0.1,
+                decay_rate=0.1,
+                position=Position(
+                    x=random.random() * 0.6 + 0.2,
+                    y=random.random(),
+                ),
             )
     agents = [
         AgentSolutionState(Position(
-            x=random.random() * 0.5,
+            x=random.random() * 0.2,
             y=random.random(),
         ), tasks, agent_ids, agent_id)
         for agent_id in agent_ids
