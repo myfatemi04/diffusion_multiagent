@@ -42,6 +42,13 @@ class AgentSolutionState:
         self.tasks = tasks
         self.agents = agents
         self.agent_id = agent_id
+        self.debug_flag = False
+    
+    def debug(self, *args):
+        if not self.debug_flag:
+            return
+        if self.agent_id in ['agent_9', 'agent_35']:
+            print(f"[agent {self.agent_id}]", *args)
 
     def calculate_path_value(self, path: list[str]) -> float:
         prev_pos = self.position
@@ -61,6 +68,8 @@ class AgentSolutionState:
         Process incoming messages.
         Returns a Boolean indicating whether bundle needs to be reconstructed.
         """
+        self.debug_flag = True
+        self.debug("Current bundle:", self.bundle, [self.y[task] for task in self.bundle])
         me = self.agent_id
         received_messages_from = set()
 
@@ -69,6 +78,7 @@ class AgentSolutionState:
         Snext = self.s.copy()
 
         for message in messages:
+            self.debug_flag = False
             self.debug(f"Received message from {message.sender_id}")
 
             them = message.sender_id
@@ -81,68 +91,73 @@ class AgentSolutionState:
             Snext[them] = timestamp
 
             for task in self.tasks:
+                if task == 'task_46':
+                    self.debug_flag = True
+                else:
+                    self.debug_flag = False
+
                 self.debug("Processing task", task)
-                their_believed_assignee = message.z[task]
-                my_believed_assignee = self.z[task]
+                their_winner = message.z[task]
+                their_winner_bid = message.y[task]
+                my_winner = Znext[task]
+                my_winner_bid = Ynext[task]
 
                 # Row 1.
                 # Sender believes they are assigned the task.
-                if their_believed_assignee == them:
+                if their_winner == them:
                     self.debug(f"Sender believes they are assigned task.")
 
                     # I believe I have the task.
-                    if my_believed_assignee == me:
+                    if my_winner == me:
                         self.debug("... and I believe I am assigned task.")
 
                         # If the sender outbids me, they get the task.
-                        if message.y[task] > self.y[task]:
-                            self.debug("... but they outbid me. Updating.")
+                        if their_winner_bid > my_winner_bid:
+                            self.debug(f"... but they outbid me [{their_winner_bid:.3f} vs. {my_winner_bid:.3f}]. Updating.")
 
                             Znext[task] = them
-                            Ynext[task] = message.y[task]
+                            Ynext[task] = their_winner_bid
                         else:
                             self.debug("... and I outbid them. No change.")
-
-                            # If I outbid them, I keep the task.
                             pass
-                    elif (my_believed_assignee == them) or (my_believed_assignee is None):
+                    elif (my_winner == them) or (my_winner is None):
                         self.debug("... and I believe they are assigned task, or I do not have a prior belief. Updating.")
 
                         # If they believe they have the task, and so do I, they get it.
                         # If they believe they have the task, and I do not think
                         # anyone has the task, they get it.
                         Znext[task] = them
-                        Ynext[task] = message.y[task]
+                        Ynext[task] = their_winner_bid
                     else:
-                        self.debug("... and I believe", my_believed_assignee, "is assigned task.")
+                        self.debug("... and I believe", my_winner, "is assigned task.")
 
                         # I believe neither of us have the task, and instead *m* has the task.
                         # If the sender received a message from *m* more recently than I did,
                         # they take the task (because they have more up-to-date information).
                         # Or, if the sender outbids *m*, they take the task.
-                        if message.s[my_believed_assignee] > self.s[my_believed_assignee] or message.y[task] > self.y[task]:
-                            self.debug(f"... but they outbid {my_believed_assignee}. Updating.")
+                        if message.s[my_winner] > Snext[my_winner] or their_winner_bid > my_winner_bid:
+                            self.debug(f"... but they outbid {my_winner}. Updating.")
 
                             Znext[task] = them
                             Ynext[task] = message.y[task]
                         else:
-                            self.debug("... but they did not outbid", my_believed_assignee)
+                            self.debug("... but they did not outbid", my_winner)
 
                 # Row 2.
                 # Sender believes I have the task.
-                elif their_believed_assignee == me:
+                elif their_winner == me:
                     self.debug(f"Sender believes I am assigned task.")
 
-                    if my_believed_assignee == me:
+                    if my_winner == me:
                         # I also believe I have the task. No change.
                         self.debug("... and I believe I am assigned task. No change.")
                         pass
-                    elif my_believed_assignee == them:
+                    elif my_winner == them:
                         # I believe they have the task. Reset.
                         self.debug("... and I believe they are assigned task. Resetting.")
                         Znext[task] = None
                         Ynext[task] = 0
-                    elif my_believed_assignee is None:
+                    elif my_winner is None:
                         # I believe nobody has the task. No change.
                         self.debug("... and I believe nobody is assigned task. No change.")
                         pass
@@ -150,29 +165,29 @@ class AgentSolutionState:
                         # I believe neither of has the task, and instead *m* has the task.
                         # If they received a message from *m* more recently than I did,
                         # I reset.
-                        self.debug("... and I believe", my_believed_assignee, "is assigned task.")
-                        if message.s[my_believed_assignee] > self.s[my_believed_assignee]:
-                            self.debug("... but they received a message from", my_believed_assignee, "more recently than I did. Resetting.")
+                        self.debug("... and I believe", my_winner, "is assigned task.")
+                        if message.s[my_winner] > Snext[my_winner]:
+                            self.debug("... but they received a message from", my_winner, "more recently than I did. Resetting.")
                             Znext[task] = None
                             Ynext[task] = 0
                         else:
-                            self.debug("... and I have the most recent information about", my_believed_assignee, "being assigned task.")
+                            self.debug("... and I have the most recent information about", my_winner, "being assigned task.")
 
                 # Row 4.
                 # Sender believes nobody has the task.
-                elif their_believed_assignee is None:
-                    self.debug(f"Sender believes nobody is assigned task.")
+                elif their_winner is None:
+                    self.debug(f"Sender ({them}) believes nobody is assigned task.")
 
-                    if my_believed_assignee == me:
+                    if my_winner == me:
                         # I believe I have the task. No change.
                         self.debug("... and I believe I am assigned task. No change.")
                         pass
-                    elif my_believed_assignee == them:
+                    elif my_winner == them:
                         # I believe they have the task. Update.
-                        self.debug("... and I believe they are assigned task. Updating.")
+                        self.debug("... and I believe they are assigned task. Updating (Resetting).")
                         Znext[task] = message.z[task]
                         Ynext[task] = message.y[task]
-                    elif my_believed_assignee is None:
+                    elif my_winner is None:
                         # I believe nobody has the task. No change.
                         self.debug("... and I also believe nobody is assigned task. No change.")
                         pass
@@ -180,76 +195,84 @@ class AgentSolutionState:
                         # I believe neither of us have the task, and instead *m* has the task.
                         # If they received a message from *m* more recently than I did,
                         # I update (i.e. reset)
-                        self.debug("... and I believe", my_believed_assignee, "is assigned task.")
-                        if message.s[my_believed_assignee] > self.s[my_believed_assignee]:
-                            self.debug("... but they received a message from", my_believed_assignee, "more recently than I did. Updating.")
+                        self.debug("... and I believe", my_winner, "is assigned task.")
+                        if message.s[my_winner] > Snext[my_winner]:
+                            self.debug("... but they received a message from", my_winner, "more recently than I did. Updating.")
                             Znext[task] = message.z[task]
                             Ynext[task] = message.y[task]
                         else:
-                            self.debug("... but I have the most recent information about", my_believed_assignee, "being assigned task. No change.")
+                            self.debug("... but I have the most recent information about", my_winner, "being assigned task. No change.")
 
                 # Row 3.
                 # Sender believes neither of us has the task, and instead *m* has the task.
                 else:
-                    self.debug(f"Sender believes {their_believed_assignee} is assigned task.")
+                    self.debug(f"Sender believes {their_winner} is assigned task.")
                     
-                    if my_believed_assignee == me:
+                    if my_winner == me:
                         # I believe I have the task. If they received a message from *m* more recently than I did,
                         # and they outbid me, I update.
                         self.debug("... and I believe I am assigned task.")
-                        if message.s[their_believed_assignee] > self.s[their_believed_assignee] and message.y[task] > self.y[task]:
-                            self.debug("... but they received a message from", their_believed_assignee, "more recently than I did and/or outbid me. Updating.")
+                        if message.s[their_winner] > Snext[their_winner] and their_winner_bid > my_winner_bid:
+                            self.debug("... but they received a message from", their_winner, "more recently than I did and/or outbid me. Updating.")
                             Znext[task] = message.z[task]
                             Ynext[task] = message.y[task]
                         else:
-                            self.debug("... but I have the most recent information about", their_believed_assignee, "being assigned task and/or they did not outbid me. No change.")
-                    elif my_believed_assignee == them:
+                            self.debug("... but I have the most recent information about", their_winner, "being assigned task and/or they did not outbid me. No change.")
+                    elif my_winner == them:
                         # I believe they have the task. If they received a message from *m* more recently than I did,
                         # I update. Otherwise, I received a message from *m* more recently than they did, but they
                         # think they have the task. I will reset in this case.
                         self.debug("... and I believe they are assigned task.")
-                        if message.s[their_believed_assignee] > self.s[their_believed_assignee]:
-                            self.debug("... but they received a message from", their_believed_assignee, "more recently than I did. Updating.")
+                        if message.s[their_winner] > Snext[their_winner]:
+                            self.debug("... but they received a message from", their_winner, "more recently than I did. Updating.")
                             Znext[task] = message.z[task]
                             Ynext[task] = message.y[task]
                         else:
-                            self.debug("... but I have the most recent information about", their_believed_assignee, "being assigned task. Resetting.")
+                            self.debug("... but I have the most recent information about", their_winner, "being assigned task. Resetting.")
                             Znext[task] = None
                             Ynext[task] = 0
-                    elif my_believed_assignee == their_believed_assignee:
+                    elif my_winner == their_winner:
                         # I agree that neither of us have the task. If they received a message from *m* more recently than I did,
                         # I will update their bid, though.
                         self.debug("... and I agree.")
-                        if message.s[their_believed_assignee] > self.s[their_believed_assignee]:
-                            self.debug("... but they received a message from", their_believed_assignee, "more recently than I did. Updating.")
+                        if message.s[their_winner] > Snext[their_winner]:
+                            self.debug("... but they received a message from", their_winner, "more recently than I did. Updating.")
                             Znext[task] = message.z[task]
                             Ynext[task] = message.y[task]
                         else:
-                            self.debug("... but I have the most recent information about", their_believed_assignee, "being assigned task. No change.")
-                    elif my_believed_assignee is None:
+                            self.debug("... but I have the most recent information about", their_winner, "being assigned task. No change.")
+                    elif my_winner is None:
                         # I believe nobody has the task. If they received a message from *m* more recently than I did,
                         # I will update to reflect that, though.
                         self.debug("... and I believe nobody is assigned task.")
-                        if message.s[their_believed_assignee] > self.s[their_believed_assignee]:
-                            self.debug("... but they received a message from", their_believed_assignee, "more recently than I did. Updating.")
+                        if message.s[their_winner] > Snext[their_winner]:
+                            self.debug("... but they received a message from", their_winner, "more recently than I did. Updating.")
                             Znext[task] = message.z[task]
                             Ynext[task] = message.y[task]
                         else:
-                            self.debug("... but I have the most recent information about", their_believed_assignee, "being assigned task. No change.")
+                            self.debug("... but I have the most recent information about", their_winner, "being assigned task. No change.")
                     else:
+                        self.debug(f"... and I believe a third person ({my_winner}) is assigned task (with bid {my_winner_bid:.3f})")
                         # If I think neither I, them, or their believed person are assigned the task...
                         # If they received a message from the person they believed it is assigned to more recently than I did,
                         # I will check if they received a message from who *I* believe it is assigned to more recently than I did,
                         # or if the person they believe it is assigned to outbid the person I believe it is assigned to.
-                        if message.s[their_believed_assignee] > self.s[their_believed_assignee]:
-                            if message.s[my_believed_assignee] > self.s[my_believed_assignee] or message.y[task] > self.y[task]:
-                                Znext[task] = message.z[task]
-                                Ynext[task] = message.y[task]
+                        if message.s[their_winner] > Snext[their_winner] and message.s[my_winner] > Snext[my_winner]:
+                            Znext[task] = message.z[task]
+                            Ynext[task] = message.y[task]
+                        elif message.s[their_winner] > Snext[their_winner] and their_winner_bid > my_winner_bid:
+                            Znext[task] = message.z[task]
+                            Ynext[task] = message.y[task]
                         # If they received a message from the person I believe it is after me, and I received a message
                         # from the person they believe it is before them, I will reset.
-                        elif message.s[my_believed_assignee] > self.s[my_believed_assignee] and self.s[their_believed_assignee] > message.s[their_believed_assignee]:
+                        elif message.s[my_winner] > Snext[my_winner] and Snext[their_winner] > message.s[their_winner]:
+                            self.debug("... but there is a conflict in who received which information first. Resetting.")
                             Znext[task] = None
                             Ynext[task] = 0
+                        else:
+                            self.debug("... but nothing was new. No change.")
+
+            self.debug_flag = True
 
         # Update the agent's state.
         # Check for conflicts.
@@ -268,14 +291,13 @@ class AgentSolutionState:
                 self.bundle,
                 self.path,
                 Ynext, Znext,
-                earliest_conflict_index
+                earliest_conflict_index,
             )
+            self.debug("New bundle:", self.bundle, [self.y[task] for task in self.bundle])
             self.s = Snext
             return True
         else:
             self.debug("No conflicts detected.")
-            self.bundle = self.bundle
-            self.path = self.path
             self.s = Snext
             self.y = Ynext
             self.z = Znext
@@ -294,10 +316,6 @@ class AgentSolutionState:
 
         return (best_insertion_point, best_marginal_value)
 
-    def debug(self, *args):
-        # print(f"[agent {self.agent_id}]", *args)
-        pass
-
     def build_bundle(self, max_bundle_size: int):
         """
         Creates a bundle.
@@ -306,43 +324,80 @@ class AgentSolutionState:
         Ynext = self.y.copy()
         bundle_next = self.bundle.copy()
         path_next = self.path.copy()
+
+        # Greedy algorithm.
+        # Our greedy choice is to pick the item that gives the best marginal value,
+        # among those that we are not outbid for and which are not already in our bundle.
         while len(bundle_next) < max_bundle_size:
             best_task = None
             best_task_marginal_value = 0
             best_task_insertion_point = None
+            task_values = {}
+            debug_agent = self.agent_id == 'agent_9'
             for task in self.tasks:
+                insertion_point, marginal_value = self.calculate_best_path_insertion_point(path_next, task)
+                assert marginal_value > 0
+                
+                bid_value = Ynext[task]
+                task_values[task] = marginal_value
+
+                if task == 'task_46':
+                    self.debug("task 46:", bid_value, marginal_value)
+
                 if task in bundle_next:
                     continue
-                
-                n, marginal_value = self.calculate_best_path_insertion_point(path_next, task)
-                bid_value = self.y[task]
-
-                assert marginal_value > 0
 
                 # I am outbid.
                 if bid_value >= marginal_value:
+                    # if debug_agent:
+                    #     print("I am outbid for", task, "with bid value", bid_value, "and marginal value", marginal_value)
                     continue
                 
+                
+                # Take argmax across all tasks to greedily choose
+                # the one that gives the best marginal value.
                 if marginal_value > best_task_marginal_value:
+                    # if debug_agent:
+                    #     print("I am not outbid for", task, "with bid value", bid_value, "and marginal value", marginal_value, "and insertion point", n, "and path", path_next)
                     best_task = task
                     best_task_marginal_value = marginal_value
-                    best_task_insertion_point = n
+                    best_task_insertion_point = insertion_point
+
+            # if debug_agent:
+            #     print("Best task is", best_task, "with marginal value", best_task_marginal_value, "and insertion point", best_task_insertion_point)
             
             if best_task is None:
                 # I cannot outbid anyone for any task.
-                print("no best task found")
+                self.debug("No best task found.")
                 break
             else:
                 assert best_task_insertion_point is not None, "Inconsistency between best_task and best_task_insertion_point"
 
-                self.debug("Best task is", best_task, "with marginal value", best_task_marginal_value, "and insertion point", best_task_insertion_point)
+                # if debug_agent:
+                #     self.debug("Best task is", best_task, "with marginal value", best_task_marginal_value, "and insertion point", best_task_insertion_point)
 
                 bundle_next.append(best_task)
                 path_next.insert(best_task_insertion_point, best_task)
                 Ynext[best_task] = best_task_marginal_value
                 Znext[best_task] = self.agent_id
+
+        # Assert DMG assumption
+        bundle_values = [
+            Ynext[task]
+            for task in bundle_next
+        ]
+        for i in range(1, len(bundle_next)):
+            earlier = bundle_next[i - 1]
+            later = bundle_next[i]
+            if Ynext[earlier] < Ynext[later]:
+                print(
+                    f"DMG assumption violated: {bundle_next} {bundle_values}"
+                )
+                print(earlier, later, self.agent_id)
+                print(Ynext[earlier], Ynext[later])
+                print(task_values[earlier], task_values[later]) # type: ignore
+                raise AssertionError("DMG Assumption Failed")
         
-        self.s = self.s
         self.z = Znext
         self.y = Ynext
         self.bundle = bundle_next
@@ -457,7 +512,17 @@ def solve_cbba():
     # Create initial bids
     for agent in agents:
         agent.build_bundle(max_bundle_size)
-    
+
+    # Calculate marginal values
+    a = agents_by_id['agent_9']
+    tA = 'task_49'
+    tB = 'task_46'
+    print(a.calculate_best_path_insertion_point([], tA))
+    print(a.calculate_best_path_insertion_point([tB], tA))
+    print(a.calculate_best_path_insertion_point([], tB))
+    print(a.calculate_best_path_insertion_point([tA], tB))
+    input("Press enter to continue...")
+
     # Iterative message-passing algorithm
     mp_type = 'global'
     # Global communication graph
@@ -479,12 +544,15 @@ def solve_cbba():
 
     # display_agents(agents)
     convergence_streak = 0
+    message_counter = 0
     for timestep in range(1000 + n_agents):
         rebuilds: list[AgentSolutionState] = []
+
         agents_order = agents.copy()
         random.shuffle(agents_order)
 
         for agent in agents_order:
+            message_counter += 1
             # Collect messages
             inbox: list[Message] = []
             for neighbor in adjacency_matrix[agent.agent_id]:
@@ -499,7 +567,7 @@ def solve_cbba():
                     neighbors=adjacency_matrix[neighbor.agent_id]
                 ))
             # Receive messages
-            needs_revisions = agent.ingest_messages(inbox, timestep)
+            needs_revisions = agent.ingest_messages(inbox, message_counter)
             if needs_revisions:
                 rebuilds.append(agent)
                 # Rebuild bundle
