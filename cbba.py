@@ -41,14 +41,14 @@ class AgentSolutionState:
         self.s: dict[str, float] = {agent: 0 for agent in agents}
         self.tasks = tasks
         self.agents = agents
-        self.agent_id = agent_id
+        self.id = agent_id
         self.debug_flag = False
     
     def debug(self, *args):
-        if not self.debug_flag:
-            return
-        if self.agent_id in ['agent_9', 'agent_35']:
-            print(f"[agent {self.agent_id}]", *args)
+        # if not self.debug_flag:
+        #     return
+        # if self.id in ['agent_9', 'agent_35']:
+        print(f"[agent {self.id}]", *args)
 
     def calculate_path_value(self, path: list[str]) -> float:
         prev_pos = self.position
@@ -70,7 +70,7 @@ class AgentSolutionState:
         """
         self.debug_flag = True
         self.debug("Current bundle:", self.bundle, [self.y[task] for task in self.bundle])
-        me = self.agent_id
+        me = self.id
         received_messages_from = set()
 
         Znext = self.z.copy()
@@ -285,15 +285,16 @@ class AgentSolutionState:
         # If we experience conflicts, we need to update y and z.
         # Additionally, we need to rebuild the bundle.
         if earliest_conflict_index != -1:
-            self.debug("Conflicts detected. Rebuilding bundle starting at", earliest_conflict_index)
+            self.debug("Conflicts detected. Releasing tasks starting at", earliest_conflict_index)
             self.bundle, self.path, self.y, self.z = release_items_added_after_index(
+                self.id,
                 self.tasks,
                 self.bundle,
                 self.path,
                 Ynext, Znext,
                 earliest_conflict_index,
             )
-            self.debug("New bundle:", self.bundle, [self.y[task] for task in self.bundle])
+            self.debug("Bundle after release:", self.bundle, [self.y[task] for task in self.bundle])
             self.s = Snext
             return True
         else:
@@ -333,16 +334,13 @@ class AgentSolutionState:
             best_task_marginal_value = 0
             best_task_insertion_point = None
             task_values = {}
-            debug_agent = self.agent_id == 'agent_9'
+            debug_agent = self.id == 'agent_9'
             for task in self.tasks:
                 insertion_point, marginal_value = self.calculate_best_path_insertion_point(path_next, task)
                 assert marginal_value > 0
                 
                 bid_value = Ynext[task]
                 task_values[task] = marginal_value
-
-                if task == 'task_46':
-                    self.debug("task 46:", bid_value, marginal_value)
 
                 if task in bundle_next:
                     continue
@@ -379,7 +377,7 @@ class AgentSolutionState:
                 bundle_next.append(best_task)
                 path_next.insert(best_task_insertion_point, best_task)
                 Ynext[best_task] = best_task_marginal_value
-                Znext[best_task] = self.agent_id
+                Znext[best_task] = self.id
 
         # Assert DMG assumption
         bundle_values = [
@@ -393,37 +391,55 @@ class AgentSolutionState:
                 print(
                     f"DMG assumption violated: {bundle_next} {bundle_values}"
                 )
-                print(earlier, later, self.agent_id)
+                print(earlier, later, self.id)
                 print(Ynext[earlier], Ynext[later])
                 print(task_values[earlier], task_values[later]) # type: ignore
                 raise AssertionError("DMG Assumption Failed")
+            
+        self.debug("New bundle:", bundle_next, [Ynext[task] for task in bundle_next])
         
         self.z = Znext
         self.y = Ynext
         self.bundle = bundle_next
         self.path = path_next
 
-def release_items_added_after_index(tasks: dict[str, Task], bundle: list[str], path: list[str], y: dict[str, float], z: dict[str, str | None], index: int):
+def release_items_added_after_index(
+    my_agent_id: str,
+    tasks: dict[str, Task],
+    bundle: list[str],
+    path: list[str],
+    y: dict[str, float],
+    z: dict[str, str | None],
+    index: int
+):
     # Remove items that occur at or after `index`
     Bnext = bundle[:index]
     # Filter path to only those that are remaining
     Pnext = [task for task in path if task in Bnext]
     # Reset y-values for tasks after the one that was removed
-    Ynext = {
-        task: 0.0 if task in bundle[index + 1:] else y[task]
-        for task in tasks.keys()
-    }
-    # Reset z-values for tasks after the one that was removed
-    Znext = {
-        task: None if task in bundle[index + 1:] else z[task]
-        for task in tasks.keys()
-    }
+    Ynext = {}
+    Znext = {}
+    for task in tasks:
+        # Check if task is set to be released (i.e. after `index` in the bundle)
+        # AND is still assigned to me. If it is not still assigned to me, we keep
+        # the updated value. (This was based on a bit of debugging)
+        if task in bundle[index + 1:] and z[task] == my_agent_id:
+            Ynext[task] = 0.0
+        else:
+            Ynext[task] = y[task]
+
+        # Reset all Z-values after the one that was removed
+        if task in bundle[index + 1:]:
+            Znext[task] = None
+        else:
+            Znext[task] = z[task]
+    
     return (Bnext, Pnext, Ynext, Znext)
 
 def display_agents(agents: list[AgentSolutionState]):
     # Print results
     for agent in agents:
-        print(f"Agent {agent.agent_id}:")
+        print(f"Agent {agent.id}:")
         print(f"  Bundle: {agent.bundle}")
         print(f"  Path: {agent.path}")
         print(f"  Value: {agent.calculate_path_value(agent.path)}")
@@ -440,7 +456,7 @@ def render_agents(agents: list[AgentSolutionState], tasks: dict[str, Task]):
     plt.ylim(0, 1)
     for agent in agents:
         plt.scatter(agent.position.x, agent.position.y, c='b')
-        plt.annotate(agent.agent_id, (agent.position.x, agent.position.y))
+        plt.annotate(agent.id, (agent.position.x, agent.position.y))
     for task in tasks.values():
         plt.scatter(task.position.x, task.position.y, c='r')
         plt.annotate(task.id, (task.position.x, task.position.y))
@@ -456,15 +472,16 @@ def render_agents(agents: list[AgentSolutionState], tasks: dict[str, Task]):
 def solve_cbba():
     import random
 
-    random.seed(1)
-
     def random_position():
         return Position(
             x=random.random(),
             y=random.random(),
         )
 
-    n_agents = 50
+    # for seed in range(1000):
+    #     print("SEED:", seed)
+    random.seed(223)
+    n_agents = 3
     max_bundle_size = 2
     n_tasks = n_agents * max_bundle_size
 
@@ -506,7 +523,7 @@ def solve_cbba():
         for agent_id in agent_ids
     ]
     agents_by_id = {
-        agent.agent_id: agent
+        agent.id: agent
         for agent in agents
     }
     # Create initial bids
@@ -514,21 +531,21 @@ def solve_cbba():
         agent.build_bundle(max_bundle_size)
 
     # Calculate marginal values
-    a = agents_by_id['agent_9']
-    tA = 'task_49'
-    tB = 'task_46'
-    print(a.calculate_best_path_insertion_point([], tA))
-    print(a.calculate_best_path_insertion_point([tB], tA))
-    print(a.calculate_best_path_insertion_point([], tB))
-    print(a.calculate_best_path_insertion_point([tA], tB))
-    input("Press enter to continue...")
+    # a = agents_by_id['agent_9']
+    # tA = 'task_49'
+    # tB = 'task_46'
+    # print(a.calculate_best_path_insertion_point([], tA))
+    # print(a.calculate_best_path_insertion_point([tB], tA))
+    # print(a.calculate_best_path_insertion_point([], tB))
+    # print(a.calculate_best_path_insertion_point([tA], tB))
+    # input("Press enter to continue...")
 
     # Iterative message-passing algorithm
     mp_type = 'global'
     # Global communication graph
     if mp_type == 'global':
         adjacency_matrix = {
-            agent.agent_id: agents
+            agent.id: agents
             for agent in agents
         }
     # Cyclic communication graph
@@ -546,32 +563,73 @@ def solve_cbba():
     convergence_streak = 0
     message_counter = 0
     for timestep in range(1000 + n_agents):
-        rebuilds: list[AgentSolutionState] = []
+        rebuilds: set[AgentSolutionState] = set()
+
+        # pairs = []
+        # for agent in agents:
+        #     for neighbor in adjacency_matrix[agent.id]:
+        #         if agent.id < neighbor.id:
+        #             pairs.append((agent, neighbor))
+        
+        # # Randomize order of message passing
+        # random.shuffle(pairs)
+
+        # # Exchange messages
+        # for agent, neighbor in pairs:
+        #     to_neighbor = Message(
+        #         sender_id=neighbor.id,
+        #         y=neighbor.y,
+        #         z=neighbor.z,
+        #         s=neighbor.s,
+        #         neighbors=adjacency_matrix[neighbor.id]
+        #     )
+        #     from_neighbor = Message(
+        #         sender_id=agent.id,
+        #         y=agent.y,
+        #         z=agent.z,
+        #         s=agent.s,
+        #         neighbors=adjacency_matrix[agent.id]
+        #     )
+        #     if agent.ingest_messages([from_neighbor], message_counter):
+        #         rebuilds.add(agent)
+        #         agent.build_bundle(max_bundle_size)
+        #     if neighbor.ingest_messages([to_neighbor], message_counter):
+        #         rebuilds.add(neighbor)
+        #         neighbor.build_bundle(max_bundle_size)
+        #     message_counter += 1
 
         agents_order = agents.copy()
         random.shuffle(agents_order)
 
+        message_counter += 1
         for agent in agents_order:
-            message_counter += 1
-            # Collect messages
-            inbox: list[Message] = []
-            for neighbor in adjacency_matrix[agent.agent_id]:
-                neighbor_id = neighbor.agent_id
-                if neighbor == agent.agent_id:
+            # Broadcast to neighbors
+            for neighbor in adjacency_matrix[agent.id]:
+                if neighbor.id == agent.id:
                     continue
-                inbox.append(Message(
-                    sender_id=neighbor_id,
-                    y=neighbor.y,
-                    z=neighbor.z,
-                    s=neighbor.s,
-                    neighbors=adjacency_matrix[neighbor.agent_id]
-                ))
-            # Receive messages
-            needs_revisions = agent.ingest_messages(inbox, message_counter)
-            if needs_revisions:
-                rebuilds.append(agent)
-                # Rebuild bundle
-                agent.build_bundle(max_bundle_size)
+                # message = Message(
+                #     sender_id=neighbor_id,
+                #     y=neighbor.y,
+                #     z=neighbor.z,
+                #     s=neighbor.s,
+                #     neighbors=adjacency_matrix[neighbor.id]
+                # )
+                message = Message(
+                    sender_id=agent.id,
+                    y=agent.y,
+                    z=agent.z,
+                    s=agent.s,
+                    neighbors=adjacency_matrix[agent.id]
+                )
+                if neighbor.ingest_messages([message], message_counter):
+                    rebuilds.add(neighbor)
+                    neighbor.build_bundle(max_bundle_size)
+            # # Receive messages
+            # needs_revisions = agent.ingest_messages(inbox, message_counter)
+            # if needs_revisions:
+            #     rebuilds.add(agent)
+            #     # Rebuild bundle
+            #     agent.build_bundle(max_bundle_size)
         
         if len(rebuilds) == 0:
             # Run algorithm at least n_agents more times to ensure that communication is complete.
@@ -591,7 +649,7 @@ def solve_cbba():
 
     assigned_tasks = set()
     for agent in agents:
-        print(f"Agent {agent.agent_id} is assigned tasks {agent.path}")
+        print(f"Agent {agent.id} is assigned tasks {agent.path}")
         assigned_tasks.update(agent.path)
     
     unassigned_tasks = set(tasks.keys()) - assigned_tasks
