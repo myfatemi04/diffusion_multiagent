@@ -20,14 +20,10 @@ def noised_any_step(x0, alpha_bar_t):
 
 def denoised(xt, noisepred, betat, alphabart, is_first_step):
     alphat = 1 - betat
-    # 3.2: sigmat^2 = betat works fine
-    # sigmat = torch.sqrt(betat)
     alphabart_prev = alphabart / alphat
     sigmat = torch.sqrt((1 - alphabart_prev) / (1 - alphabart) * betat)
     denoised = torch.rsqrt(alphat) * (xt - ((1 - alphat) / torch.sqrt(1 - alphabart)) * noisepred) + (sigmat * torch.randn_like(xt) if not is_first_step else 0)
-    # denoised = torch.rsqrt(alphabart) * xt - (torch.rsqrt(alphabart) - 1) * noisepred
-    # denoised = torch.rsqrt(alphat) * (xt - ((1 - alphat) / torch.sqrt(1 - alphabart)) * noisepred) + (sigmat * torch.randn_like(xt) if not is_first_step else 0)
-    print(xt, noisepred, ((1 - alphat) / torch.sqrt(1 - alphabart)), alphat, torch.rsqrt(alphat))
+    # print(xt, noisepred, ((1 - alphat) / torch.sqrt(1 - alphabart)), alphat, torch.rsqrt(alphat))
     return denoised
 
 # target: 0
@@ -44,11 +40,11 @@ for _ in range(1000):
         # alphat = 1 - betat
         # alphabart_prev = alphabart / alphat
         # sigmat = torch.sqrt((1 - alphabart_prev) / (1 - alphabart) * betat)
-        noisepred = current - 2
+        noisepred = current - 1
         # print(current, sigmat)
         history_noise.append(noisepred.item())
         history.append(current.item())
-        current = denoised(current, noisepred, betat, alphabart, True) #t == 1)
+        current = denoised(current, noisepred, betat, alphabart, t == 1)
     plt.plot(history, label='History')
     plt.plot(history_noise, label='Noise Prediction')
     plt.legend()
