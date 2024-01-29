@@ -5,9 +5,71 @@ import torch.nn as nn
 import einops
 from einops.layers.torch import Rearrange
 
-from conv1d_components import (
-    Downsample1d, Upsample1d, Conv1dBlock)
-from posenc_2 import SinusoidalPosEmb
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+# from einops.layers.torch import Rearrange
+
+
+class Downsample1d(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.conv = nn.Conv1d(dim, dim, 3, 2, 1)
+
+    def forward(self, x):
+        return self.conv(x)
+
+class Upsample1d(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.conv = nn.ConvTranspose1d(dim, dim, 4, 2, 1)
+
+    def forward(self, x):
+        return self.conv(x)
+
+class Conv1dBlock(nn.Module):
+    '''
+        Conv1d --> GroupNorm --> Mish
+    '''
+
+    def __init__(self, inp_channels, out_channels, kernel_size, n_groups=8):
+        super().__init__()
+
+        self.block = nn.Sequential(
+            nn.Conv1d(inp_channels, out_channels, kernel_size, padding=kernel_size // 2),
+            # Rearrange('batch channels horizon -> batch channels 1 horizon'),
+            nn.GroupNorm(n_groups, out_channels),
+            # Rearrange('batch channels 1 horizon -> batch channels horizon'),
+            nn.Mish(),
+        )
+
+    def forward(self, x):
+        return self.block(x)
+
+
+def test():
+    cb = Conv1dBlock(256, 128, kernel_size=3)
+    x = torch.zeros((1,256,16))
+    o = cb(x)
+
+import math
+import torch
+import torch.nn as nn
+
+class SinusoidalPosEmb(nn.Module):
+    def __init__(self, dim, max_period=10000):
+        super().__init__()
+        self.dim = dim
+        self.max_period = max_period
+
+    def forward(self, x: torch.Tensor):
+        device = x.device
+        half_dim = self.dim // 2
+        emb = math.log(self.max_period) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+        emb = x.unsqueeze(-1) * emb[None, :]
+        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
+        return emb
 
 logger = logging.getLogger(__name__)
 

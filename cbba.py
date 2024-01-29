@@ -48,7 +48,7 @@ class AgentSolutionState:
         # if not self.debug_flag:
         #     return
         # if self.id in ['agent_9', 'agent_35']:
-        print(f"[agent {self.id}]", *args)
+        # print(f"[agent {self.id}]", *args)
         pass
 
     def calculate_path_value(self, path: list[str]) -> float:
@@ -454,7 +454,7 @@ def display_agents(agents: list[AgentSolutionState]):
         print(f"  S: {agent.s}")
         print()
 
-def render_agents(agents: list[AgentSolutionState], tasks: dict[str, Task]):
+def render_agents(agents: list[AgentSolutionState], tasks: dict[str, Task], special_tasks: list[str] = []):
     import matplotlib.pyplot as plt
 
     plt.figure(figsize=(10, 10))
@@ -462,10 +462,10 @@ def render_agents(agents: list[AgentSolutionState], tasks: dict[str, Task]):
     plt.ylim(0, 1)
     for agent in agents:
         plt.scatter(agent.position.x, agent.position.y, c='b')
-        plt.annotate(agent.id, (agent.position.x, agent.position.y))
+        # plt.annotate(agent.id, (agent.position.x, agent.position.y))
     for task in tasks.values():
-        plt.scatter(task.position.x, task.position.y, c='r')
-        plt.annotate(task.id, (task.position.x, task.position.y))
+        plt.scatter(task.position.x, task.position.y, c='r' if task.id not in special_tasks else 'g')
+        # plt.annotate(task.id, (task.position.x, task.position.y))
     for agent in agents:
         prev_pos = agent.position
         for i, task_id in enumerate(agent.path):
@@ -490,9 +490,10 @@ def solve_cbba():
     for seed in [10067]:
         print("SEED:", seed)
         random.seed(seed)
-        n_agents = 3
+        n_agents = 50
         max_bundle_size = 2
-        n_tasks = n_agents * max_bundle_size
+        n_tasks = n_agents * (max_bundle_size + 2)
+        use_high_value_tasks = True
 
         agent_ids = [
             f'agent_{i}' for i in range(1, n_agents + 1)
@@ -500,19 +501,32 @@ def solve_cbba():
         task_ids = [
             f'task_{i}' for i in range(1, n_tasks + 1)
         ]
+        special_tasks = []
         tasks = {}
         for task_id in task_ids:
             if random.random() < 0.4:
                 # High-value, front line-ish tasks
-                tasks[task_id] = Task(
-                    id=task_id,
-                    value=2.0,
-                    decay_rate=0.2,
-                    position=Position(
-                        x=random.random() * 0.2 + 0.8,
-                        y=random.random(),
-                    ),
-                )
+                if use_high_value_tasks:
+                    special_tasks.append(task_id)
+                    tasks[task_id] = Task(
+                        id=task_id,
+                        value=2.0,
+                        decay_rate=0.2,
+                        position=Position(
+                            x=random.random() * 0.2 + 0.8,
+                            y=random.random(),
+                        ),
+                    )
+                else:
+                    tasks[task_id] = Task(
+                        id=task_id,
+                        value=1.0,
+                        decay_rate=0.1,
+                        position=Position(
+                            x=random.random() * 0.2 + 0.8,
+                            y=random.random(),
+                        ),
+                    )
             else:
                 # Lower-value, auxiliary tasks
                 tasks[task_id] = Task(
@@ -536,7 +550,7 @@ def solve_cbba():
             for agent in agents
         }
         if do_render:
-            render_agents(agents, tasks)
+            render_agents(agents, tasks, special_tasks)
 
         # Create initial bids
         for agent in agents:
@@ -669,7 +683,7 @@ def solve_cbba():
         print(f"Unassigned tasks: {unassigned_tasks}")
 
         if do_render:
-            render_agents(agents, tasks)
+            render_agents(agents, tasks, special_tasks)
 
             # Using Linear Sum Assignment
             import numpy as np
@@ -684,7 +698,7 @@ def solve_cbba():
             for i, agent in enumerate(agents):
                 agent.path = [task_ids[col_ind[i]]]
                 agent.bundle = [task_ids[col_ind[i]]]
-            render_agents(agents, tasks)
+            render_agents(agents, tasks, special_tasks)
     
 if __name__ == '__main__':
     solve_cbba()

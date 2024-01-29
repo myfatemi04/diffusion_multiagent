@@ -32,7 +32,7 @@ if __name__ == '__main__':
     reverse_process_results = []
     original_values = []
     for _ in range(1000):
-        current = torch.randn(())
+        current = torch.randn(()) + 2
         original_values.append(current.item())
         history = [current.item()]
         history_noise = []
@@ -42,17 +42,17 @@ if __name__ == '__main__':
             # alphat = 1 - betat
             # alphabart_prev = alphabart / alphat
             # sigmat = torch.sqrt((1 - alphabart_prev) / (1 - alphabart) * betat)
-            noisepred = current - 1
+            noisepred = current # - 1
             # print(current, sigmat)
             history_noise.append(noisepred.item())
             # history_noise.append(betat.item())
             history.append(current.item())
             current = denoised(current, noisepred, betat, alphabart, t == 1)
-        # plt.plot(history, label='History')
+        plt.plot(history, label='History')
         # plt.plot(history_noise, label='Noise Prediction')
-        # plt.legend()
-        # plt.show()
-        # exit()
+        plt.legend()
+        plt.show()
+        exit()
         reverse_process_results.append(current.item())
 
     results = []
@@ -62,7 +62,7 @@ if __name__ == '__main__':
     scheduler = DDPMScheduler(num_train_timesteps=NUM_TRAIN_TIMESTEPS, clip_sample=False)
     scheduler.set_timesteps(NUM_TRAIN_TIMESTEPS)
 
-    for test in range(1000):
+    for test in range(100):
         data = torch.randn((1, 1))
         for timestep in range(NUM_TRAIN_TIMESTEPS):
             predicted_noise = (data - 1) # + 0.01 * torch.randn((4, 2))
