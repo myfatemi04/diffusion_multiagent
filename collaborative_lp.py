@@ -60,37 +60,72 @@ def solve_one_task_per_agent(agent_start_positions, task_locations, task_values)
 
     return res, (objective, A_ub, b_ub, A_eq, b_eq)
 
-agent_start_positions = np.array([
-    [0, 0],
-    [1, 1],
-    [2, 2]
-])
-task_locations = np.array([
-    [1, 0],
-    [0, 0.1],
-    [2, 1]
-])
-task_values = np.array([10, 10, 10])
+def test_simple():
+    agent_start_positions = np.array([
+        [0, 0],
+        [1, 1],
+        [2, 2]
+    ])
+    task_locations = np.array([
+        [1, 0],
+        [0, 0.1],
+        [2, 1]
+    ])
+    task_values = np.array([10, 10, 10])
 
-plt.title("Setup")
-plt.scatter(agent_start_positions[:, 0], agent_start_positions[:, 1], c='r', label='Agent Start Positions')
-plt.scatter(task_locations[:, 0], task_locations[:, 1], c='b', label='Task Locations')
-plt.legend()
-plt.show()
+    plt.title("Setup")
+    plt.scatter(agent_start_positions[:, 0], agent_start_positions[:, 1], c='r', label='Agent Start Positions')
+    plt.scatter(task_locations[:, 0], task_locations[:, 1], c='b', label='Task Locations')
+    plt.legend()
+    plt.show()
 
-res, matrices = solve_one_task_per_agent(agent_start_positions, task_locations, task_values)
+    res, matrices = solve_one_task_per_agent(agent_start_positions, task_locations, task_values)
 
-assignments = res.x.reshape((len(agent_start_positions), len(task_locations)))
+    assignments = res.x.reshape((len(agent_start_positions), len(task_locations)))
+    (assn_i, assn_j) = np.where(assignments > 0.5)
 
-(assn_i, assn_j) = np.where(assignments > 0.5)
+    plt.title("Solution")
+    plt.scatter(agent_start_positions[:, 0], agent_start_positions[:, 1], c='r', label='Agent Start Positions')
+    plt.scatter(task_locations[:, 0], task_locations[:, 1], c='b', label='Task Locations')
+    plt.legend()
+    for i, j in zip(assn_i, assn_j):
+        print(f"Agent {i} assigned to Task {j} with value {task_values[j]}")
+        plt.plot([agent_start_positions[i, 0], task_locations[j, 0]], [agent_start_positions[i, 1], task_locations[j, 1]], c='g')
+    plt.show()
 
-plt.title("Solution")
-plt.scatter(agent_start_positions[:, 0], agent_start_positions[:, 1], c='r', label='Agent Start Positions')
-plt.scatter(task_locations[:, 0], task_locations[:, 1], c='b', label='Task Locations')
-plt.legend()
+def test_randomized():
+    num_agents = 25
+    num_tasks = 50
 
-for i, j in zip(assn_i, assn_j):
-    print(f"Agent {i} assigned to Task {j} with value {task_values[j]}")
-    plt.plot([agent_start_positions[i, 0], task_locations[j, 0]], [agent_start_positions[i, 1], task_locations[j, 1]], c='g')
+    agent_start_positions = np.random.rand(num_agents, 2)
+    task_locations = np.random.rand(num_tasks, 2)
+    task_values = np.ones(num_tasks) * 10 # np.random.rand(num_tasks) * 10
 
-plt.show()
+    plt.title("Setup")
+    plt.scatter(agent_start_positions[:, 0], agent_start_positions[:, 1], c='r', label='Agent Start Positions')
+    plt.scatter(task_locations[:, 0], task_locations[:, 1], c='b', label='Task Locations')
+    plt.legend()
+    plt.show()
+
+    res, matrices = solve_one_task_per_agent(agent_start_positions, task_locations, task_values)
+
+    assignments = res.x.reshape((len(agent_start_positions), len(task_locations)))
+    (assn_i, assn_j) = np.where(assignments > 0.5)
+
+    total_value = -res.fun
+    print("Result:", res)
+    print("Total value:", total_value)
+
+    plt.title("Solution")
+    plt.scatter(agent_start_positions[:, 0], agent_start_positions[:, 1], c='r', label='Agent Start Positions')
+    plt.scatter(task_locations[:, 0], task_locations[:, 1], c='b', label='Task Locations')
+    plt.legend()
+    for i, j in zip(assn_i, assn_j):
+        print(f"Agent {i} assigned to Task {j} with value {task_values[j]}")
+        plt.plot([agent_start_positions[i, 0], task_locations[j, 0]], [agent_start_positions[i, 1], task_locations[j, 1]], c='g')
+    
+    print(f"Num. Assignments Made: {len(assn_i)} / {min(num_agents, num_tasks)}")
+
+    plt.show()
+
+test_randomized()
