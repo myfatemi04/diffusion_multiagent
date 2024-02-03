@@ -115,16 +115,18 @@ def create_heterodata(agent_locations, task_locations):
 # will just use one-hot encoding for x and y positions
 width = 100
 height = 100
+n_agents = 10
+n_tasks = 10
 n_scenarios = 10000
 data: List[Tuple[HeteroData, np.ndarray, np.ndarray, np.ndarray]] = []
 
 for idx in tqdm.tqdm(range(n_scenarios), desc='Generating scenarios'):
-    agent_locations, task_locations, task_assignment = generate_scenario(10, 10, width, height)
+    agent_locations, task_locations, task_assignment = generate_scenario(n_agents, n_tasks, width, height)
     data.append((create_heterodata(agent_locations, task_locations), agent_locations, task_locations, task_assignment))
 
 dummy = data[0][0]
 
-net = GNN([64, 64, 64, 64])
+net = GNN([128, 128, 64])
 net = gnn.to_hetero(net, dummy.metadata(), aggr='sum')
 
 # populate the channel sizes by passing in a dummy dataset of the same shape
