@@ -55,7 +55,9 @@ def generate_scenario(agents: int, tasks: int, width: int, height: int, show=Fal
 class GNN(nn.Module):
     def __init__(self, hidden_channels, out_channels):
         super().__init__()
-        # these are `lazy`
+        # these are `lazy`, input_channels=-1 are rederived at first forward() pass
+        # and are automatically converted to use the correct message passing functions
+        # with heterodata
         self.conv1 = gnn.SAGEConv((-1, -1), hidden_channels, dropout=0.1)
         self.lin1 = gnn.Linear(-1, hidden_channels)
         self.conv2 = gnn.SAGEConv(hidden_channels, out_channels, dropout=0.1)
@@ -67,12 +69,19 @@ class GNN(nn.Module):
         x = self.conv2(x, edge_index) + self.lin2(x)
         return x
 
+def one_hot_2d(positions: torch.Tensor, width: int, height: int):
+    x_emb = nn.functional.one_hot(positions[..., 0], num_classes=width)
+    y_emb = nn.functional.one_hot(positions[..., 1], num_classes=height)
+    return torch.concatenate([x_emb, y_emb], dim=-1)
+
 # we will first use a contextualized bandit and make decisions with a gnn
 # will just use one-hot encoding for x and y positions
-agent_locations, task_locations, task_assignment = generate_scenario(10, 10, 100, 100)
+width = 100
+height = 100
+agent_locations, task_locations, task_assignment = generate_scenario(10, 10, width, height)
 data = HeteroData()
-data['agent'].x = torch.tensor(agent_locations, dtype=torch.float)
-data['task'].x = torch.tensor(task_locations, dtype=torch.float)
+data['agent'].x = one_hot_2d(torch.tensor(agent_locations, dtype=torch.long), width, height).float()
+data['task'].x = one_hot_2d(torch.tensor(task_locations, dtype=torch.long), width, height).float()
 # tasks <-> agents
 data['agent', 'sees', 'task'].edge_index = torch.tensor([
     [i for i in range(agent_locations.shape[0]) for j in range(task_locations.shape[0])],
