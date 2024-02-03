@@ -22,6 +22,7 @@ from torch_geometric.data import HeteroData
 import numpy as np
 import scipy.optimize as opt
 import matplotlib.pyplot as plt
+import tqdm
 
 # HeteroData -> graph with both agent nodes and task nodes (heterogenous)
 # to do this, we have a different edge_index for each relationship
@@ -55,23 +56,32 @@ def generate_scenario(agents: int, tasks: int, width: int, height: int, show=Fal
 # heterogenous graph learning: from https://pytorch-geometric.readthedocs.io/en/latest/notes/heterogeneous.html
 # we create a "heterognn"
 class GNN(nn.Module):
-    def __init__(self, hidden_channels, out_channels):
+    def __init__(self, channel_counts):
         super().__init__()
         # these are `lazy`, input_channels=-1 are rederived at first forward() pass
         # and are automatically converted to use the correct message passing functions
         # with heterodata
-        self.conv1 = gnn.SAGEConv((-1, -1), hidden_channels, dropout=0.1)
-        self.lin1 = gnn.Linear(-1, hidden_channels)
-        self.conv2 = gnn.SAGEConv(hidden_channels, out_channels, dropout=0.1)
-        self.lin2 = gnn.Linear(hidden_channels, out_channels)
-        self.layernorm = gnn.LayerNorm(out_channels)
-        self.hidden_channels = hidden_channels
-        self.out_channels = out_channels
+        convs = []
+        lins = []
+        for i in range(len(channel_counts)):
+            convs.append(gnn.SAGEConv((-1, -1) if i == 0 else channel_counts[i - 1], channel_counts[i]))
+            lins.append(gnn.Linear(-1, channel_counts[i]))
+            # self.conv1 = gnn.SAGEConv((-1, -1) if i == 0 else channel_counts[i - 1], channel_counts[i], dropout=0.1)
+            # self.lin1 = gnn.Linear(-1, hidden_channels)
+            # self.conv2 = gnn.SAGEConv(hidden_channels, hidden_channels, dropout=0.1)
+            # self.lin2 = gnn.Linear(hidden_channels, hidden_channels)
+        self.convs = nn.ModuleList(convs)
+        self.lins = nn.ModuleList(lins)
+        self.layernorm = gnn.LayerNorm(channel_counts[-1])
 
     def forward(self, x, edge_index):
-        x = self.conv1(x, edge_index) + self.lin1(x)
-        x = x.relu()
-        x = self.conv2(x, edge_index) + self.lin2(x)
+        for i, (conv, lin) in enumerate(zip(self.convs, self.lins)):
+            x = conv(x, edge_index) + lin(x)
+            if i != len(self.convs) - 1:
+                x = x.relu()
+        # x = self.conv1(x, edge_index) + self.lin1(x)
+        # x = x.relu()
+        # x = self.conv2(x, edge_index) + self.lin2(x)
         # so the task and policy embeddings are reasonable
         x = self.layernorm(x)
         return x
@@ -105,16 +115,16 @@ def create_heterodata(agent_locations, task_locations):
 # will just use one-hot encoding for x and y positions
 width = 100
 height = 100
-n_scenarios = 100
+n_scenarios = 10000
 data: List[Tuple[HeteroData, np.ndarray, np.ndarray, np.ndarray]] = []
 
-for idx in range(n_scenarios):
+for idx in tqdm.tqdm(range(n_scenarios), desc='Generating scenarios'):
     agent_locations, task_locations, task_assignment = generate_scenario(10, 10, width, height)
     data.append((create_heterodata(agent_locations, task_locations), agent_locations, task_locations, task_assignment))
 
 dummy = data[0][0]
 
-net = GNN(64, 16)
+net = GNN([64, 64, 64, 64])
 net = gnn.to_hetero(net, dummy.metadata(), aggr='sum')
 
 # populate the channel sizes by passing in a dummy dataset of the same shape
@@ -123,45 +133,74 @@ with torch.no_grad():
     # now we can see that the output is a dictionary with keys 'agent' and 'task'
     # print(out.keys())
 # used in CLIP, going to use it here
-logit_scale = torch.nn.Parameter(torch.tensor(1.0))
+scale = torch.nn.Parameter(torch.tensor(1.0))
 
-optim = torch.optim.Adam([*net.parameters(), logit_scale], lr=1e-3, weight_decay=0.1)
+optim = torch.optim.Adam([*net.parameters(), scale], lr=1e-3)
+lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=n_scenarios, eta_min=1e-6)
 
 split = 0.9
 train = data[:int(split * n_scenarios)]
 test = data[int(split * n_scenarios):]
 
-for ep in range(10):
-    for (sample, agent_locations, task_locations, task_assignment) in train:
+loss_hist = []
+
+for ep in range(1):
+    for (sample, agent_locations, task_locations, task_assignment) in (pbar := tqdm.tqdm(train, desc=f'Epoch {ep}')):
         out = net(sample.x_dict, sample.edge_index_dict)
         # create assignment matrix
-        logits = (out['agent'] @ out['task'].T) * logit_scale
+        logits: torch.Tensor = (out['agent'] @ out['task'].T) * scale
+        # calculate value of assignment
+        # choices = list(values.argmax(dim=1).detach().numpy())
+        # agent_task_distance = np.linalg.norm(
+        #     agent_locations[:, None, :].repeat(len(task_locations), axis=1) -
+        #     task_locations[None, :, :].repeat(len(agent_locations), axis=0),
+        #     axis=2
+        # )
+        # total_cost = sum(agent_task_distance[range(len(agent_locations)), choices])
+        # MSE = F.mse_loss(values, torch.tensor(task_assignment).float())
+
         # apply cross-entropy loss. logits has shape [n_agents, n_tasks], and task_assignment has shape [n_agents]
         loss = F.cross_entropy(logits, torch.tensor(task_assignment).long())
         optim.zero_grad()
         loss.backward()
         optim.step()
-        print(loss.item(), end='\r')
-    print()
+        lr_scheduler.step()
+        pbar.set_postfix(loss=loss.item())
+        loss_hist.append(loss.item())
+
+# plot loss_hist
+plt.plot(loss_hist)
+plt.title("Training loss")
+plt.xlabel("Step")
+plt.ylabel("Loss (Cross-Entropy)")
+plt.show()
 
 # eval
 with torch.no_grad():
     for (sample, agent_locations, task_locations, task_assignment) in test:
         out = net(sample.x_dict, sample.edge_index_dict)
-        logits = (out['agent'] @ out['task'].T) * logit_scale
+        logits = (out['agent'] @ out['task'].T) * scale
         loss = F.cross_entropy(logits, torch.tensor(task_assignment).long())
-        neural_assn = list(logits.argmax(dim=1).numpy())
-        print(loss.item())
-        print(neural_assn)
-        print(task_assignment)
+        neural_assn = logits.argmax(dim=1).numpy()
+        print("eval loss:", loss.item())
+        print("pred assignment:", neural_assn)
+        print("true assignment:", task_assignment)
         print()
 
         plt.scatter(agent_locations[:, 0], agent_locations[:, 1], color='blue', label='agent locations')
         plt.scatter(task_locations[:, 0], task_locations[:, 1], color='red', label='task locations')
         for agent_i, task_i in zip(range(len(agent_locations)), task_assignment):
-            plt.plot([agent_locations[agent_i, 0], task_locations[task_i, 0]], [agent_locations[agent_i, 1], task_locations[task_i, 1]], color='green')
+            plt.plot(
+                [agent_locations[agent_i, 0], task_locations[task_i, 0]],
+                [agent_locations[agent_i, 1], task_locations[task_i, 1]],
+                color='green', label='true' if agent_i == 0 else None, linewidth=3
+            )
         for agent_i, task_i in zip(range(len(agent_locations)), neural_assn):
-            plt.plot([agent_locations[agent_i, 0], task_locations[task_i, 0]], [agent_locations[agent_i, 1], task_locations[task_i, 1]], color='purple')
+            plt.plot(
+                [agent_locations[agent_i, 0] + 0.5, task_locations[task_i, 0] + 0.5],
+                [agent_locations[agent_i, 1] + 0.5, task_locations[task_i, 1] + 0.5],
+                color='purple', label='pred' if agent_i == 0 else None, linewidth=3
+            )
 
         plt.legend()
         plt.show()
