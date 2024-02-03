@@ -64,12 +64,10 @@ class GNN(nn.Module):
         convs = []
         lins = []
         for i in range(len(channel_counts)):
-            convs.append(gnn.SAGEConv((-1, -1) if i == 0 else channel_counts[i - 1], channel_counts[i]))
+            # convs.append(gnn.SAGEConv((-1, -1) if i == 0 else channel_counts[i - 1], channel_counts[i]))
+            # lins.append(gnn.Linear(-1, channel_counts[i]))
+            convs.append(gnn.GATConv((-1, -1) if i == 0 else channel_counts[i - 1], channel_counts[i], heads=1, dropout=0.1, add_self_loops=False))
             lins.append(gnn.Linear(-1, channel_counts[i]))
-            # self.conv1 = gnn.SAGEConv((-1, -1) if i == 0 else channel_counts[i - 1], channel_counts[i], dropout=0.1)
-            # self.lin1 = gnn.Linear(-1, hidden_channels)
-            # self.conv2 = gnn.SAGEConv(hidden_channels, hidden_channels, dropout=0.1)
-            # self.lin2 = gnn.Linear(hidden_channels, hidden_channels)
         self.convs = nn.ModuleList(convs)
         self.lins = nn.ModuleList(lins)
         self.layernorm = gnn.LayerNorm(channel_counts[-1])
