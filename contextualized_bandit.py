@@ -106,15 +106,15 @@ def create_heterodata(agent_locations, task_locations):
 width = 100
 height = 100
 n_scenarios = 100
-data: List[Tuple[HeteroData, np.ndarray]] = []
+data: List[Tuple[HeteroData, np.ndarray, np.ndarray, np.ndarray]] = []
 
 for idx in range(n_scenarios):
     agent_locations, task_locations, task_assignment = generate_scenario(10, 10, width, height)
-    data.append((create_heterodata(agent_locations, task_locations), task_assignment))
+    data.append((create_heterodata(agent_locations, task_locations), agent_locations, task_locations, task_assignment))
 
 dummy = data[0][0]
 
-net = GNN(64, 64)
+net = GNN(64, 16)
 net = gnn.to_hetero(net, dummy.metadata(), aggr='sum')
 
 # populate the channel sizes by passing in a dummy dataset of the same shape
@@ -127,11 +127,12 @@ logit_scale = torch.nn.Parameter(torch.tensor(1.0))
 
 optim = torch.optim.Adam([*net.parameters(), logit_scale], lr=1e-3, weight_decay=0.1)
 
-train = data[:int(0.8 * n_scenarios)]
-test = data[int(0.8 * n_scenarios):]
+split = 0.9
+train = data[:int(split * n_scenarios)]
+test = data[int(split * n_scenarios):]
 
 for ep in range(10):
-    for (sample, task_assignment) in train:
+    for (sample, agent_locations, task_locations, task_assignment) in train:
         out = net(sample.x_dict, sample.edge_index_dict)
         # create assignment matrix
         logits = (out['agent'] @ out['task'].T) * logit_scale
@@ -140,14 +141,29 @@ for ep in range(10):
         optim.zero_grad()
         loss.backward()
         optim.step()
-        print(loss.item())
+        print(loss.item(), end='\r')
+    print()
 
 # eval
 with torch.no_grad():
-    for (sample, task_assignment) in test:
+    for (sample, agent_locations, task_locations, task_assignment) in test:
         out = net(sample.x_dict, sample.edge_index_dict)
         logits = (out['agent'] @ out['task'].T) * logit_scale
-        print(F.cross_entropy(logits, torch.tensor(task_assignment).long()).item())
-        print(logits.argmax(dim=1))
+        loss = F.cross_entropy(logits, torch.tensor(task_assignment).long())
+        neural_assn = list(logits.argmax(dim=1).numpy())
+        print(loss.item())
+        print(neural_assn)
         print(task_assignment)
         print()
+
+        plt.scatter(agent_locations[:, 0], agent_locations[:, 1], color='blue', label='agent locations')
+        plt.scatter(task_locations[:, 0], task_locations[:, 1], color='red', label='task locations')
+        for agent_i, task_i in zip(range(len(agent_locations)), task_assignment):
+            plt.plot([agent_locations[agent_i, 0], task_locations[task_i, 0]], [agent_locations[agent_i, 1], task_locations[task_i, 1]], color='green')
+        for agent_i, task_i in zip(range(len(agent_locations)), neural_assn):
+            plt.plot([agent_locations[agent_i, 0], task_locations[task_i, 0]], [agent_locations[agent_i, 1], task_locations[task_i, 1]], color='purple')
+
+        plt.legend()
+        plt.show()
+
+        exit()
