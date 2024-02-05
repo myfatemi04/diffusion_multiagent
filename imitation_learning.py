@@ -240,6 +240,14 @@ def main():
             print("true assignment:", task_assignment)
             print()
 
+            # plot scores matrix
+            plt.title("Scores matrix")
+            plt.xlabel("Task")
+            plt.ylabel("Agent")
+            plt.imshow(scores.numpy())
+            plt.colorbar()
+            plt.show()
+
             plt.scatter(agent_locations[:, 0], agent_locations[:, 1], color='blue', label='agent locations')
             plt.scatter(task_locations[:, 0], task_locations[:, 1], color='red', label='task locations')
             for agent_i, task_i in zip(range(len(agent_locations)), task_assignment):

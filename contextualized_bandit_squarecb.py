@@ -159,7 +159,7 @@ def main():
     scale = torch.nn.Parameter(torch.tensor(1.0))
 
     skip = False
-    # os.chdir('runs/run_6')
+    # os.chdir('runs/run_7')
     # net.load_state_dict(torch.load("model.pth"))
     # skip = True
 
@@ -171,10 +171,10 @@ def main():
     value_hist = []
 
     if not skip:
-        gamma = 1.0
-        epochs = 5
+        temperature = 1.0
+        epochs = 1
 
-        optim = torch.optim.Adam([*net.parameters(), scale], lr=1e-3)
+        optim = torch.optim.Adam([*net.parameters()], lr=1e-3)
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=n_scenarios * epochs, eta_min=1e-6)
         for ep in range(epochs):
             for (sample, agent_locations, task_locations, task_assignment) in (pbar := tqdm.tqdm(train, desc=f'Epoch {ep}')):
@@ -186,7 +186,7 @@ def main():
                 gap = scores.max(dim=1, keepdim=True).values - scores
                 # inverse gap weighting
                 # Will calculate the actual lambda later, for now will just to softmax
-                p = F.softmax(-gamma * gap, dim=1)
+                p = F.softmax(-gap/temperature, dim=1)
                 soft_choices = [torch.multinomial(p[i], 1, replacement=False)[0].item() for i in range(n_agents)]
                 # p = 1/(lda + gamma * gap)
 
@@ -197,18 +197,18 @@ def main():
                 # output has shape [n_agents, n_tasks], and task_assignment has shape [n_agents]
                 # train outputs to approximate log-scaled value
                 # logvalue = torch.log1p(torch.tensor(value, dtype=torch.float))
-                crossentropy = ((scores - value) ** 2).mean()
+                loss = ((scores.sum() - value) ** 2).mean()
 
                 optim.zero_grad()
-                crossentropy.backward()
+                loss.backward()
                 optim.step()
                 lr_scheduler.step()
-                pbar.set_postfix(loss=f"{crossentropy.item():.3e}")
+                pbar.set_postfix(loss=f"{loss.item():.3e}")
 
-                loss_hist.append(crossentropy.item())
+                loss_hist.append(loss.item())
                 value_hist.append(value)
             # reduce gamma each epoch
-            gamma *= torch.pow(torch.tensor(0.5), 1/epochs)
+            temperature *= torch.pow(torch.tensor(0.5), 1/epochs)
 
         run_id = 0
         while os.path.exists(f'runs/run_{run_id}'):
@@ -220,7 +220,7 @@ def main():
         with open("info.json", "w") as f:
             json.dump({
                 "alg": "squarecb-0.1",
-                "gamma": float(gamma),
+                "gamma": float(temperature),
                 "n_agents": n_agents,
                 "n_tasks": n_tasks,
                 "n_scenarios": n_scenarios,
@@ -255,8 +255,10 @@ def main():
 
     # eval
     with torch.no_grad():
+        temperature = 0.5
         for (sample, agent_locations, task_locations, task_assignment) in test:
             out = net(sample.x_dict, sample.edge_index_dict)
+
             # create score matrix
             scores: torch.Tensor = (out['agent'] @ out['task'].T) * scale
             # choose which nodes to assign selves to through some exploration method
@@ -264,7 +266,7 @@ def main():
             gap = scores.max(dim=1, keepdim=True).values - scores
             # inverse gap weighting
             # Will calculate the actual lambda later, for now will just to softmax
-            p = F.softmax(-gamma * gap, dim=1)
+            p = F.softmax(-gap/temperature, dim=1)
             soft_choices = [torch.multinomial(p[i], 1, replacement=False)[0].item() for i in range(n_agents)]
             greedy_choices = list(scores.argmax(dim=1).detach().numpy())
             crossentropy = F.cross_entropy(scores, torch.tensor(task_assignment).long())
@@ -273,8 +275,17 @@ def main():
             print("greedy eval value:", evaluate_assignment(greedy_choices, agent_locations, task_locations))
             print("true value:", evaluate_assignment(task_assignment, agent_locations, task_locations))
             print("pred assignment:", soft_choices)
+            print("greedy assignment:", greedy_choices)
             print("true assignment:", task_assignment)
             print()
+            
+            # plot scores matrix
+            plt.title("Scores matrix")
+            plt.xlabel("Task")
+            plt.ylabel("Agent")
+            plt.imshow(scores.numpy())
+            plt.colorbar()
+            plt.show()
 
             # plot soft value
             plt.subplot(2, 1, 1)
@@ -294,7 +305,6 @@ def main():
                 )
 
             plt.legend()
-            plt.show()
 
             # plot greedy value
             plt.subplot(2, 1, 2)
