@@ -15,6 +15,7 @@ How do we define collaborative tasks?
 
 import json
 import os
+import random
 from typing import List, Tuple
 import torch
 import torch.nn as nn
@@ -25,12 +26,6 @@ import numpy as np
 import scipy.optimize as opt
 import matplotlib.pyplot as plt
 import tqdm
-
-width = 100
-height = 100
-n_agents = 10
-n_tasks = 10
-n_scenarios = 10000
 
 # HeteroData -> graph with both agent nodes and task nodes (heterogenous)
 # to do this, we have a different edge_index for each relationship
@@ -97,7 +92,7 @@ def one_hot_2d(positions: torch.Tensor, width: int, height: int):
     y_emb = nn.functional.one_hot(positions[..., 1], num_classes=height)
     return torch.concatenate([x_emb, y_emb], dim=-1)
 
-def create_heterodata(agent_locations, task_locations, width, height):
+def create_heterodata(agent_locations, task_locations):
     data = HeteroData()
     data['agent'].x = one_hot_2d(torch.tensor(agent_locations, dtype=torch.long), width, height).float()
     data['task'].x = one_hot_2d(torch.tensor(task_locations, dtype=torch.long), width, height).float()
@@ -116,25 +111,6 @@ def create_heterodata(agent_locations, task_locations, width, height):
         [j for i in range(agent_locations.shape[0]) for j in range(agent_locations.shape[0])]
     ], dtype=torch.long)
     return data
-
-def evaluate_assignment_0(choices, agent_locations, task_locations):
-    agent_task_distance = np.linalg.norm(
-        agent_locations[:, None, :].repeat(len(task_locations), axis=1) -
-        task_locations[None, :, :].repeat(len(agent_locations), axis=0),
-        axis=2
-    )
-    completion_value = (width ** 2 + height ** 2) ** 0.5
-    # credit assignment will become an interesting subproblem
-    value = 0
-    for i in range(n_tasks):
-        least_cost = None
-        for choice in choices:
-            if choice == i:
-                if least_cost is None or agent_task_distance[choice, i] < least_cost:
-                    least_cost = agent_task_distance[choice, i]
-        if least_cost is not None:
-            value += completion_value - least_cost
-    return value
 
 def evaluate_assignment(choices, agent_locations, task_locations):
     agent_task_distance = np.linalg.norm(
@@ -162,21 +138,29 @@ def evaluate_assignment(choices, agent_locations, task_locations):
     for agent_id, choice in enumerate(choices):
         movement_cost = (1/100 * 1/100)
         agent_values[agent_id] -= float(np.linalg.norm(agent_locations[agent_id] - task_locations[choice])) * movement_cost
-    return sum(agent_values)
+    return agent_values
+
+# we will first use a contextualized bandit and make decisions with a gnn
+# will just use one-hot encoding for x and y positions
+width = 100
+height = 100
+n_agents = 10
+n_tasks = 10
+n_scenarios = 10000
 
 def main():
-    # we will first use a contextualized bandit and make decisions with a gnn
-    # will just use one-hot encoding for x and y positions
+    random.seed(0)
+    np.random.seed(0)
+    torch.manual_seed(0)
     data: List[Tuple[HeteroData, np.ndarray, np.ndarray, np.ndarray]] = []
 
     for idx in tqdm.tqdm(range(n_scenarios), desc='Generating scenarios'):
         agent_locations, task_locations, task_assignment = generate_scenario(n_agents, n_tasks, width, height)
-        data.append((create_heterodata(agent_locations, task_locations, width, height), agent_locations, task_locations, task_assignment))
+        data.append((create_heterodata(agent_locations, task_locations), agent_locations, task_locations, task_assignment))
 
     dummy = data[0][0]
 
-    sizes = [128, 128, 64]
-    net = GNN(sizes)
+    net = GNN([64, 64])
     net = gnn.to_hetero(net, dummy.metadata(), aggr='sum')
 
     # populate the channel sizes by passing in a dummy dataset of the same shape
@@ -187,8 +171,10 @@ def main():
     # used in CLIP, going to use it here
     scale = torch.nn.Parameter(torch.tensor(1.0))
 
-    optim = torch.optim.Adam([*net.parameters(), scale], lr=1e-3)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=n_scenarios, eta_min=1e-6)
+    skip = False
+    # os.chdir('runs/run_7')
+    # net.load_state_dict(torch.load("model.pth"))
+    # skip = True
 
     split = 0.9
     train = data[:int(split * n_scenarios)]
@@ -197,83 +183,119 @@ def main():
     loss_hist = []
     value_hist = []
 
-    epochs = 1
-    for ep in range(epochs):
-        for (sample, agent_locations, task_locations, task_assignment) in (pbar := tqdm.tqdm(train, desc=f'Epoch {ep}')):
-            out = net(sample.x_dict, sample.edge_index_dict)
-            # create assignment matrix
-            scores: torch.Tensor = (out['agent'] @ out['task'].T) * scale
-            loss = F.cross_entropy(scores, torch.tensor(task_assignment).long())
-            # calculate value of assignment
-            choices = list(scores.argmax(dim=1).detach().numpy())
-            value = evaluate_assignment(choices, agent_locations, task_locations)
+    if not skip:
+        temperature = 0.1
+        epochs = 2
 
-            optim.zero_grad()
-            loss.backward()
-            optim.step()
-            lr_scheduler.step()
-            pbar.set_postfix(loss=f"{loss.item():.3e}")
-            loss_hist.append(loss.item())
-            value_hist.append(value)
+        optim = torch.optim.Adam([*net.parameters()], lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=n_scenarios * epochs, eta_min=1e-6)
+        for ep in range(epochs):
+            for (sample, agent_locations, task_locations, task_assignment) in (pbar := tqdm.tqdm(train, desc=f'Epoch {ep}')):
+                out = net(sample.x_dict, sample.edge_index_dict)
+                # create score matrix
+                scores: torch.Tensor = (out['agent'] @ out['task'].T) * scale
+                # choose which nodes to assign selves to through some exploration method
+                # (for example, SquareCB). shape is [n_agents, n_tasks]
+                gap = scores.max(dim=1, keepdim=True).values.detach() - scores
+                # inverse gap weighting
+                # Will calculate the actual lambda later, for now will just to softmax
+                p = F.softmax(-gap/temperature, dim=1)
+                soft_choices = [torch.multinomial(p[i], 1, replacement=False)[0].item() for i in range(n_agents)]
+                # p = 1/(lda + gamma * gap)
 
-    alg = "imitationlearning"
-    run_id = 0
-    os.listdir()
-    while any([f'run_{run_id}_' in f for f in os.listdir('runs')]):
-        run_id += 1
-    os.makedirs(f'runs/run_{run_id}_{alg}')
-    os.chdir(f'runs/run_{run_id}_{alg}')
-    np.save('loss_hist.npy', loss_hist)
-    np.save('value_hist.npy', value_hist)
-    with open("info.json", "w") as f:
-        json.dump({
-            "alg": alg,
-            "n_agents": n_agents,
-            "n_tasks": n_tasks,
-            "n_scenarios": n_scenarios,
-            "width": width,
-            "height": height,
-            "epochs": epochs,
-            "sizes": sizes,
-        }, f)
-    
-    # plot loss_hist
-    loss_hist = np.array(loss_hist)
-    loss_hist = np.convolve(loss_hist, np.ones(100) / 100, mode='valid')
-    plt.subplot(2, 1, 1)
-    plt.plot(loss_hist)
-    plt.title("Loss")
-    plt.xlabel("Step")
-    plt.ylabel("Loss (log)")
-    plt.yscale('log')
-    # plot value_hist
-    value_hist = np.array(value_hist)
-    value_hist = np.convolve(value_hist, np.ones(100) / 100, mode='valid')
-    plt.subplot(2, 1, 2)
-    plt.plot(value_hist)
-    plt.title("Value")
-    plt.xlabel("Step")
-    plt.ylabel("Value")
-    # save
-    plt.tight_layout()
-    plt.savefig("loss_value.png")
-    plt.show()
+                # calculate value of assignment
+                # choices = list(scores.argmax(dim=1).detach().numpy())
+                values = evaluate_assignment(soft_choices, agent_locations, task_locations)
+                pre_values = values
+                values = np.array(values)
+                values = values - np.mean(values)
+                values = values / np.std(values)
+                # output has shape [n_agents, n_tasks], and task_assignment has shape [n_agents]
+                # treat scores as logits
+                loss = -(F.log_softmax(scores[torch.arange(n_agents), soft_choices], dim=-1) * torch.tensor(values).float()).mean()
 
-    torch.save(net.state_dict(), "model.pth")
+                optim.zero_grad()
+                loss.backward()
+                optim.step()
+                lr_scheduler.step()
+                pbar.set_postfix(loss=f"{loss.item():.3e}")
+
+                loss_hist.append(loss.item())
+                value_hist.append(sum(pre_values))
+            # reduce gamma each epoch
+            # temperature *= torch.pow(torch.tensor(0.1), 1/epochs)
+
+        alg = "squarecb-0.3-policygradient"
+        run_id = 0
+        os.listdir()
+        while any([f'run_{run_id}_' in f for f in os.listdir('runs')]):
+            run_id += 1
+        os.makedirs(f'runs/run_{run_id}_{alg}')
+        os.chdir(f'runs/run_{run_id}_{alg}')
+        np.save('loss_hist.npy', loss_hist)
+        np.save('value_hist.npy', value_hist)
+        with open("info.json", "w") as f:
+            json.dump({
+                "alg": alg,
+                "gamma": float(temperature),
+                "n_agents": n_agents,
+                "n_tasks": n_tasks,
+                "n_scenarios": n_scenarios,
+                "width": width,
+                "height": height,
+                "epochs": epochs,
+            }, f)
+
+        torch.save(net.state_dict(), "model.pth")
+
+        # plot loss_hist
+        loss_hist = np.array(loss_hist)
+        loss_hist = np.convolve(loss_hist, np.ones(100) / 100, mode='valid')
+        plt.subplot(2, 1, 1)
+        plt.plot(loss_hist)
+        plt.title("Loss")
+        plt.xlabel("Step")
+        plt.ylabel("Loss (log)")
+        plt.yscale('log')
+        # plot value_hist
+        value_hist = np.array(value_hist)
+        value_hist = np.convolve(value_hist, np.ones(100) / 100, mode='valid')
+        plt.subplot(2, 1, 2)
+        plt.plot(value_hist)
+        plt.title("Value")
+        plt.xlabel("Step")
+        plt.ylabel("Value")
+        # save
+        plt.tight_layout()
+        plt.savefig("loss_value.png")
+        plt.show()
 
     # eval
     with torch.no_grad():
+        temperature = 0.5
         for (sample, agent_locations, task_locations, task_assignment) in test:
             out = net(sample.x_dict, sample.edge_index_dict)
-            scores = (out['agent'] @ out['task'].T) * scale
-            loss = F.cross_entropy(scores, torch.tensor(task_assignment).long())
-            neural_assn = scores.argmax(dim=1).numpy()
-            print("eval crossentropy:", loss.item())
-            print("eval value:", evaluate_assignment(neural_assn, agent_locations, task_locations))
-            print("pred assignment:", neural_assn)
+
+            # create score matrix
+            scores: torch.Tensor = (out['agent'] @ out['task'].T) * scale
+            # choose which nodes to assign selves to through some exploration method
+            # (for example, SquareCB). shape is [n_agents, n_tasks]
+            gap = scores.max(dim=1, keepdim=True).values - scores
+            # inverse gap weighting
+            # Will calculate the actual lambda later, for now will just to softmax
+            p = F.softmax(-gap/temperature, dim=1)
+            soft_choices = [torch.multinomial(p[i], 1, replacement=False)[0].item() for i in range(n_agents)]
+            greedy_choices = list(scores.argmax(dim=1).detach().numpy())
+            crossentropy = F.cross_entropy(scores, torch.tensor(task_assignment).long())
+            print("eval crossentropy:", crossentropy.item())
+            print("soft eval value:", sum(evaluate_assignment(soft_choices, agent_locations, task_locations)))
+            print("greedy eval value:", sum(evaluate_assignment(greedy_choices, agent_locations, task_locations)))
+            print("true value:", sum(evaluate_assignment(task_assignment, agent_locations, task_locations)))
+            print("pred assignment:", soft_choices)
+            print("greedy assignment:", greedy_choices)
             print("true assignment:", task_assignment)
             print()
-
+            
             # plot scores matrix
             plt.title("Scores matrix")
             plt.xlabel("Task")
@@ -282,6 +304,8 @@ def main():
             plt.colorbar()
             plt.show()
 
+            # plot soft value
+            plt.subplot(2, 1, 1)
             plt.scatter(agent_locations[:, 0], agent_locations[:, 1], color='blue', label='agent locations')
             plt.scatter(task_locations[:, 0], task_locations[:, 1], color='red', label='task locations')
             for agent_i, task_i in zip(range(len(agent_locations)), task_assignment):
@@ -290,7 +314,26 @@ def main():
                     [agent_locations[agent_i, 1], task_locations[task_i, 1]],
                     color='green', label='true' if agent_i == 0 else None, linewidth=3
                 )
-            for agent_i, task_i in zip(range(len(agent_locations)), neural_assn):
+            for agent_i, task_i in zip(range(len(agent_locations)), soft_choices):
+                plt.plot(
+                    [agent_locations[agent_i, 0] + 0.5, task_locations[task_i, 0] + 0.5],
+                    [agent_locations[agent_i, 1] + 0.5, task_locations[task_i, 1] + 0.5],
+                    color='purple', label='pred' if agent_i == 0 else None, linewidth=3
+                )
+
+            plt.legend()
+
+            # plot greedy value
+            plt.subplot(2, 1, 2)
+            plt.scatter(agent_locations[:, 0], agent_locations[:, 1], color='blue', label='agent locations')
+            plt.scatter(task_locations[:, 0], task_locations[:, 1], color='red', label='task locations')
+            for agent_i, task_i in zip(range(len(agent_locations)), task_assignment):
+                plt.plot(
+                    [agent_locations[agent_i, 0], task_locations[task_i, 0]],
+                    [agent_locations[agent_i, 1], task_locations[task_i, 1]],
+                    color='green', label='true' if agent_i == 0 else None, linewidth=3
+                )
+            for agent_i, task_i in zip(range(len(agent_locations)), greedy_choices):
                 plt.plot(
                     [agent_locations[agent_i, 0] + 0.5, task_locations[task_i, 0] + 0.5],
                     [agent_locations[agent_i, 1] + 0.5, task_locations[task_i, 1] + 0.5],

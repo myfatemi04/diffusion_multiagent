@@ -139,6 +139,10 @@ n_tasks = 10
 n_scenarios = 10000
 
 def main():
+    import random
+    random.seed(0)
+    np.random.seed(0)
+    torch.manual_seed(0)
     data: List[Tuple[HeteroData, np.ndarray, np.ndarray, np.ndarray]] = []
 
     for idx in tqdm.tqdm(range(n_scenarios), desc='Generating scenarios'):
