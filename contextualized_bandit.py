@@ -144,45 +144,65 @@ test = data[int(split * n_scenarios):]
 
 loss_hist = []
 
-for ep in range(1):
+def evaluate_assignment(choices, agent_locations, task_locations):
+    agent_task_distance = np.linalg.norm(
+        agent_locations[:, None, :].repeat(len(task_locations), axis=1) -
+        task_locations[None, :, :].repeat(len(agent_locations), axis=0),
+        axis=2
+    )
+    completion_value = (width ** 2 + height ** 2) ** 0.5
+    # credit assignment will become an interesting subproblem
+    value = 0
+    for i in range(n_tasks):
+        least_cost = None
+        for choice in choices:
+            if choice == i:
+                if least_cost is None or agent_task_distance[choice, i] < least_cost:
+                    least_cost = agent_task_distance[choice, i]
+        if least_cost is not None:
+            value += completion_value - least_cost
+    return value
+
+for ep in range(4):
     for (sample, agent_locations, task_locations, task_assignment) in (pbar := tqdm.tqdm(train, desc=f'Epoch {ep}')):
         out = net(sample.x_dict, sample.edge_index_dict)
         # create assignment matrix
-        logits: torch.Tensor = (out['agent'] @ out['task'].T) * scale
+        scores: torch.Tensor = (out['agent'] @ out['task'].T) * scale
         # calculate value of assignment
-        # choices = list(values.argmax(dim=1).detach().numpy())
-        # agent_task_distance = np.linalg.norm(
-        #     agent_locations[:, None, :].repeat(len(task_locations), axis=1) -
-        #     task_locations[None, :, :].repeat(len(agent_locations), axis=0),
-        #     axis=2
-        # )
-        # total_cost = sum(agent_task_distance[range(len(agent_locations)), choices])
-        # MSE = F.mse_loss(values, torch.tensor(task_assignment).float())
+        choices = list(scores.argmax(dim=1).detach().numpy())
+        value = evaluate_assignment(choices, agent_locations, task_locations)
+        value2 = evaluate_assignment(task_assignment, agent_locations, task_locations)
+        # output has shape [n_agents, n_tasks], and task_assignment has shape [n_agents]
+        # train outputs to approximate log-scaled value
+        logvalue = torch.log1p(torch.tensor(value, dtype=torch.float))
+        loss = ((scores - logvalue) ** 2).mean()
 
-        # apply cross-entropy loss. logits has shape [n_agents, n_tasks], and task_assignment has shape [n_agents]
-        loss = F.cross_entropy(logits, torch.tensor(task_assignment).long())
         optim.zero_grad()
         loss.backward()
         optim.step()
         lr_scheduler.step()
-        pbar.set_postfix(loss=loss.item())
+        pbar.set_postfix(loss=f"{loss.item():.3e}")
         loss_hist.append(loss.item())
 
 # plot loss_hist
+loss_hist = np.array(loss_hist)
+loss_hist = np.convolve(loss_hist, np.ones(100) / 100, mode='valid')
 plt.plot(loss_hist)
 plt.title("Training loss")
 plt.xlabel("Step")
 plt.ylabel("Loss (Cross-Entropy)")
+plt.yscale('log')
 plt.show()
 
 # eval
 with torch.no_grad():
     for (sample, agent_locations, task_locations, task_assignment) in test:
         out = net(sample.x_dict, sample.edge_index_dict)
-        logits = (out['agent'] @ out['task'].T) * scale
-        loss = F.cross_entropy(logits, torch.tensor(task_assignment).long())
-        neural_assn = logits.argmax(dim=1).numpy()
-        print("eval loss:", loss.item())
+        scores = (out['agent'] @ out['task'].T) * scale
+        loss = F.cross_entropy(scores, torch.tensor(task_assignment).long())
+        neural_assn = scores.argmax(dim=1).numpy()
+        print("eval crossentropy:", loss.item())
+        print("eval value:", evaluate_assignment(neural_assn, agent_locations, task_locations))
         print("pred assignment:", neural_assn)
         print("true assignment:", task_assignment)
         print()
