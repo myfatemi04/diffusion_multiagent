@@ -156,9 +156,6 @@ with torch.no_grad():
 # used in CLIP, going to use it here
 scale = torch.nn.Parameter(torch.tensor(1.0))
 
-optim = torch.optim.Adam([*net.parameters(), scale], lr=1e-3)
-lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=n_scenarios, eta_min=1e-6)
-
 split = 0.9
 train = data[:int(split * n_scenarios)]
 test = data[int(split * n_scenarios):]
@@ -166,15 +163,12 @@ test = data[int(split * n_scenarios):]
 loss_hist = []
 value_hist = []
 
-run_id = 0
-while os.path.exists(f'runs/run_{run_id}'):
-    run_id += 1
-
-os.makedirs(f'runs/run_{run_id}')
-os.chdir(f'runs/run_{run_id}')
-
 gamma = 1.0
-epochs = 1
+epochs = 5
+
+optim = torch.optim.Adam([*net.parameters(), scale], lr=1e-3)
+lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=n_scenarios * epochs, eta_min=1e-6)
+
 for ep in range(epochs):
     for (sample, agent_locations, task_locations, task_assignment) in (pbar := tqdm.tqdm(train, desc=f'Epoch {ep}')):
         out = net(sample.x_dict, sample.edge_index_dict)
@@ -192,7 +186,7 @@ for ep in range(epochs):
         # calculate value of assignment
         # choices = list(scores.argmax(dim=1).detach().numpy())
         value = evaluate_assignment(choices, agent_locations, task_locations)
-        value2 = evaluate_assignment(task_assignment, agent_locations, task_locations)
+        # value2 = evaluate_assignment(task_assignment, agent_locations, task_locations)
         # output has shape [n_agents, n_tasks], and task_assignment has shape [n_agents]
         # train outputs to approximate log-scaled value
         logvalue = torch.log1p(torch.tensor(value, dtype=torch.float))
@@ -207,8 +201,13 @@ for ep in range(epochs):
         loss_hist.append(loss.item())
         value_hist.append(value)
 
-np.save('loss_hist.np', loss_hist)
-np.save('value_hist.np', value_hist)
+run_id = 0
+while os.path.exists(f'runs/run_{run_id}'):
+    run_id += 1
+os.makedirs(f'runs/run_{run_id}')
+os.chdir(f'runs/run_{run_id}')
+np.save('loss_hist.npy', loss_hist)
+np.save('value_hist.npy', value_hist)
 with open("info.json", "w") as f:
     json.dump({
         "alg": "squarecb",
@@ -230,11 +229,17 @@ plt.title("Loss")
 plt.xlabel("Step")
 plt.ylabel("Loss (log)")
 plt.yscale('log')
+# plot value_hist
+value_hist = np.array(value_hist)
+value_hist = np.convolve(value_hist, np.ones(100) / 100, mode='valid')
 plt.subplot(2, 1, 2)
 plt.plot(value_hist)
 plt.title("Value")
 plt.xlabel("Step")
 plt.ylabel("Value")
+# save
+plt.tight_layout()
+plt.savefig("loss_value.png")
 plt.show()
 
 # eval
