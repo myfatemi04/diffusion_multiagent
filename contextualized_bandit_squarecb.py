@@ -147,7 +147,7 @@ def main():
 
     dummy = data[0][0]
 
-    net = GNN([128, 128, 64])
+    net = GNN([32, 32])
     net = gnn.to_hetero(net, dummy.metadata(), aggr='sum')
 
     # populate the channel sizes by passing in a dummy dataset of the same shape
@@ -191,8 +191,8 @@ def main():
             # value2 = evaluate_assignment(task_assignment, agent_locations, task_locations)
             # output has shape [n_agents, n_tasks], and task_assignment has shape [n_agents]
             # train outputs to approximate log-scaled value
-            logvalue = torch.log1p(torch.tensor(value, dtype=torch.float))
-            loss = ((scores - logvalue) ** 2).mean()
+            # logvalue = torch.log1p(torch.tensor(value, dtype=torch.float))
+            loss = ((scores - value) ** 2).mean()
 
             optim.zero_grad()
             loss.backward()
@@ -202,6 +202,8 @@ def main():
 
             loss_hist.append(loss.item())
             value_hist.append(value)
+        # reduce gamma each epoch
+        gamma *= torch.pow(torch.tensor(0.9), 1/epochs)
 
     run_id = 0
     while os.path.exists(f'runs/run_{run_id}'):
