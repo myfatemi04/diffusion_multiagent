@@ -119,7 +119,8 @@ def evaluate_assignment(choices, agent_locations, task_locations):
         axis=2
     )
     # calculate a value for each agent
-    agent_values = [0.] * len(agent_locations)
+    # by default, agents get penalized for not finding a task
+    agent_values = [-1.0] * len(agent_locations)
     for task_id in range(n_tasks):
         least_cost = None
         least_cost_agent = None
@@ -135,9 +136,9 @@ def evaluate_assignment(choices, agent_locations, task_locations):
             # give a reward of 1
             agent_values[least_cost_agent] = 1 # 1 * np.exp(-least_cost / 40)
     # calculate cost incurred by moving far
-    for agent_id, choice in enumerate(choices):
-        movement_cost = (1/100 * 1/100)
-        agent_values[agent_id] -= float(np.linalg.norm(agent_locations[agent_id] - task_locations[choice])) * movement_cost
+    # for agent_id, choice in enumerate(choices):
+    #     movement_cost = (1/100 * 1/100)
+    #     agent_values[agent_id] -= float(np.linalg.norm(agent_locations[agent_id] - task_locations[choice])) * movement_cost
     return agent_values
 
 # we will first use a contextualized bandit and make decisions with a gnn
@@ -185,10 +186,27 @@ def main():
 
     if not skip:
         temperature = 0.1
-        epochs = 2
+        epochs = 25
+        initial_lr = 1e-4
+        end_lr = 1e-6
 
-        optim = torch.optim.Adam([*net.parameters()], lr=1e-3)
-        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=n_scenarios * epochs, eta_min=1e-6)
+        import wandb
+        wandb.init(
+            # set the wandb project where this run will be logged
+            project="arl-collab-planning",
+            # track hyperparameters and run metadata
+            config={
+                "lr_schedule": "cosine_annealing",
+                "initial_lr": initial_lr,
+                "end_lr": end_lr,
+                "architecture": "squarecb-0.2-factorized",
+                "n_scenarios": n_scenarios,
+                "epochs": epochs,
+            }
+        )
+
+        optim = torch.optim.Adam([*net.parameters()], lr=initial_lr)
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=n_scenarios * epochs, eta_min=end_lr)
         for ep in range(epochs):
             for (sample, agent_locations, task_locations, task_assignment) in (pbar := tqdm.tqdm(train, desc=f'Epoch {ep}')):
                 out = net(sample.x_dict, sample.edge_index_dict)
@@ -210,7 +228,7 @@ def main():
                 # output has shape [n_agents, n_tasks], and task_assignment has shape [n_agents]
                 # train outputs to approximate log-scaled value
                 # logvalue = torch.log1p(torch.tensor(value, dtype=torch.float))
-                loss = ((scores - torch.tensor(values).float()) ** 2).mean()
+                loss = ((scores[torch.arange(0, n_agents), soft_choices] - torch.tensor(values).float()) ** 2).mean()
 
                 optim.zero_grad()
                 loss.backward()
@@ -220,6 +238,13 @@ def main():
 
                 loss_hist.append(loss.item())
                 value_hist.append(sum(values))
+                wandb.log({
+                    "loss": loss.item(),
+                    "value_sum": sum(values),
+                    "value_per_agent": sum(values)/n_agents,
+                    "temperature": temperature,
+                    "lr": optim.param_groups[0]['lr'],
+                })
             # reduce gamma each epoch
             # temperature *= torch.pow(torch.tensor(0.1), 1/epochs)
 
