@@ -280,6 +280,7 @@ def main():
             plt.ylabel("Agent")
             plt.imshow(scores.numpy())
             plt.colorbar()
+            plt.savefig("scores_matrix.png")
             plt.show()
 
             plt.scatter(agent_locations[:, 0], agent_locations[:, 1], color='blue', label='agent locations')

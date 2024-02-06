@@ -302,6 +302,7 @@ def main():
             plt.ylabel("Agent")
             plt.imshow(scores.numpy())
             plt.colorbar()
+            plt.savefig("scores_matrix.png")
             plt.show()
 
             # plot soft value
