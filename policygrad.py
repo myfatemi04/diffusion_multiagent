@@ -161,7 +161,7 @@ def main():
 
     dummy = data[0][0]
 
-    net = GNN([32, 32, 32])
+    net = GNN([128, 128])
     net = gnn.to_hetero(net, dummy.metadata(), aggr='sum')
 
     # populate the channel sizes by passing in a dummy dataset of the same shape
@@ -199,7 +199,7 @@ def main():
                 "lr_schedule": "cosine_annealing",
                 "initial_lr": initial_lr,
                 "end_lr": end_lr,
-                "architecture": "squarecb-0.2-factorized",
+                "architecture": "v3-policygradientish",
                 "epochs": epochs,
                 "n_scenarios": n_scenarios,
                 "n_agents": n_agents,
@@ -209,19 +209,18 @@ def main():
 
         try:
 
-            optim = torch.optim.Adam([*net.parameters()], lr=initial_lr)
+            optim = torch.optim.Adam([*net.parameters(), scale], lr=initial_lr)
             lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=n_scenarios * epochs, eta_min=end_lr)
             for ep in range(epochs):
                 for (sample, agent_locations, task_locations, task_assignment) in (pbar := tqdm.tqdm(train, desc=f'Epoch {ep}')):
                     out = net(sample.x_dict, sample.edge_index_dict)
                     # create score matrix
                     scores: torch.Tensor = (out['agent'] @ out['task'].T) * scale
-                    # choose which nodes to assign selves to through some exploration method
-                    # (for example, SquareCB). shape is [n_agents, n_tasks]
-                    gap = scores.max(dim=1, keepdim=True).values - scores
                     # inverse gap weighting
                     # Will calculate the actual lambda later, for now will just to softmax
-                    p = F.softmax(-gap/temperature, dim=1)
+                    logits = scores/temperature
+                    p = F.softmax(logits, dim=1)
+                    logp = F.log_softmax(logits, dim=1)
                     soft_choices = [torch.multinomial(p[i], 1, replacement=False)[0].item() for i in range(n_agents)]
                     # p = 1/(lda + gamma * gap)
                     greedy_choices = list(scores.argmax(dim=1).detach().numpy())
@@ -234,7 +233,7 @@ def main():
                     # output has shape [n_agents, n_tasks], and task_assignment has shape [n_agents]
                     # train outputs to approximate log-scaled value
                     # logvalue = torch.log1p(torch.tensor(value, dtype=torch.float))
-                    loss = ((scores[torch.arange(0, n_agents), soft_choices] - torch.tensor(values).float()) ** 2).mean()
+                    loss = (-logp[torch.arange(0, n_agents), soft_choices] * torch.tensor(values).float()).mean()
 
                     optim.zero_grad()
                     loss.backward()
@@ -259,7 +258,7 @@ def main():
             print("interrupting run")
             pass
 
-        alg = "squarecb-0.2-factorized"
+        alg = "squarecb-0.3"
         run_id = 0
         os.listdir()
         while any([f'run_{run_id}_' in f for f in os.listdir('runs')]):
