@@ -74,28 +74,43 @@ class GNN(nn.Module):
         self.convs = nn.ModuleList(convs)
         self.lins = nn.ModuleList(lins)
         self.layernorm = gnn.LayerNorm(channel_counts[-1])
+        self.projection = gnn.Linear(channel_counts[-1], 1)
 
     def forward(self, x, edge_index):
         for i, (conv, lin) in enumerate(zip(self.convs, self.lins)):
             x = conv(x, edge_index) + lin(x)
             if i != len(self.convs) - 1:
                 x = x.relu()
-        # x = self.conv1(x, edge_index) + self.lin1(x)
-        # x = x.relu()
-        # x = self.conv2(x, edge_index) + self.lin2(x)
-        # so the task and policy embeddings are reasonable
         x = self.layernorm(x)
-        return x
+        # Project to output space.
+        # Both are dim=1 so this is fine to share.
+        # However at some point heterogenous GNNs might suffer...
+        return self.projection(x)
 
-def one_hot_2d(positions: torch.Tensor, width: int, height: int):
-    x_emb = nn.functional.one_hot(positions[..., 0], num_classes=width)
-    y_emb = nn.functional.one_hot(positions[..., 1], num_classes=height)
-    return torch.concatenate([x_emb, y_emb], dim=-1)
+def encode_2d_position_as_1d_one_hot_vector(positions: torch.Tensor, width: int, height: int):
+    x_indicator = nn.functional.one_hot(positions[..., 0], num_classes=width)
+    y_indicator = nn.functional.one_hot(positions[..., 1], num_classes=height)
+    return torch.concatenate([x_indicator, y_indicator], dim=-1)
 
 def create_heterodata(agent_locations, task_locations):
     data = HeteroData()
-    data['agent'].x = one_hot_2d(torch.tensor(agent_locations, dtype=torch.long), width, height).float()
-    data['task'].x = one_hot_2d(torch.tensor(task_locations, dtype=torch.long), width, height).float()
+    data['agent'].x = torch.concatenate((
+        encode_2d_position_as_1d_one_hot_vector(
+            torch.tensor(agent_locations, dtype=torch.long),
+            width, height
+        ).float(),
+        # Additional flags:
+        # 1. Whether to treat this node as "self" or another agent
+        # 2... (Other things at some point)
+        torch.zeros((agent_locations.shape[0], 1), dtype=torch.float),
+    ), dim=-1)
+    data['task'].x = torch.concatenate((
+        encode_2d_position_as_1d_one_hot_vector(
+            torch.tensor(task_locations, dtype=torch.long),
+            width, height
+        ).float(),
+        # No additional flags.
+    ), dim=-1)
     # tasks <-> agents
     data['agent', 'sees', 'task'].edge_index = torch.tensor([
         [i for i in range(agent_locations.shape[0]) for j in range(task_locations.shape[0])],
@@ -112,15 +127,17 @@ def create_heterodata(agent_locations, task_locations):
     ], dtype=torch.long)
     return data
 
-def evaluate_assignment(choices, agent_locations, task_locations):
+def calculate_assignment_reward_per_agent(choices, agent_locations, task_locations):
+    """
+    Returns total reward of the provided assignment.
+    """
     agent_task_distance = np.linalg.norm(
         agent_locations[:, None, :].repeat(len(task_locations), axis=1) -
         task_locations[None, :, :].repeat(len(agent_locations), axis=0),
         axis=2
     )
     # calculate a value for each agent
-    # by default, agents get penalized for not finding a task
-    agent_values = [-1.0] * len(agent_locations)
+    agent_values = [0.] * len(agent_locations)
     for task_id in range(n_tasks):
         least_cost = None
         least_cost_agent = None
@@ -136,17 +153,18 @@ def evaluate_assignment(choices, agent_locations, task_locations):
             # give a reward of 1
             agent_values[least_cost_agent] = 1 # 1 * np.exp(-least_cost / 40)
     # calculate cost incurred by moving far
-    # for agent_id, choice in enumerate(choices):
-    #     movement_cost = (1/100 * 1/100)
-    #     agent_values[agent_id] -= float(np.linalg.norm(agent_locations[agent_id] - task_locations[choice])) * movement_cost
+    for agent_id, choice in enumerate(choices):
+        movement_cost = (1/100 * 1/100)
+        agent_values[agent_id] -= float(np.linalg.norm(agent_locations[agent_id] - task_locations[choice])) * movement_cost
+
     return agent_values
 
 # we will first use a contextualized bandit and make decisions with a gnn
 # will just use one-hot encoding for x and y positions
-width = 25
-height = 25
-n_agents = 5
-n_tasks = 5
+width = 100
+height = 100
+n_agents = 10
+n_tasks = 10
 n_scenarios = 10000
 
 def main():
@@ -182,82 +200,63 @@ def main():
     test = data[int(split * n_scenarios):]
 
     loss_hist = []
-    value_hist = []
+    reward_hist = []
 
     if not skip:
         temperature = 0.1
-        epochs = 25
-        initial_lr = 1e-4
-        end_lr = 1e-6
+        epochs = 2
 
-        import wandb
-        wandb.init(
-            # set the wandb project where this run will be logged
-            project="arl-collab-planning",
-            # track hyperparameters and run metadata
-            config={
-                "lr_schedule": "cosine_annealing",
-                "initial_lr": initial_lr,
-                "end_lr": end_lr,
-                "architecture": "v3-policygradientish",
-                "epochs": epochs,
-                "n_scenarios": n_scenarios,
-                "n_agents": n_agents,
-                "n_tasks": n_tasks,
-            }
-        )
+        optim = torch.optim.Adam([*net.parameters()], lr=1e-3)
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=n_scenarios * epochs, eta_min=1e-6)
+        for ep in range(epochs):
+            for (sample, agent_locations, task_locations, task_assignment) in (pbar := tqdm.tqdm(train, desc=f'Epoch {ep}')):
+                # Run separate policies for each agent to calculate corresponding logits and values
+                # Run REINFORCE with baseline
+                logits_per_agent = []
+                value_estimates_per_agent = []
 
-        try:
-            optim = torch.optim.Adam([*net.parameters(), scale], lr=initial_lr)
-            lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=n_scenarios * epochs, eta_min=end_lr)
-            for ep in range(epochs):
-                for (sample, agent_locations, task_locations, task_assignment) in (pbar := tqdm.tqdm(train, desc=f'Epoch {ep}')):
-                    out = net(sample.x_dict, sample.edge_index_dict)
-                    # create score matrix
-                    scores: torch.Tensor = (out['agent'] @ out['task'].T) * scale
-                    # inverse gap weighting
-                    # Will calculate the actual lambda later, for now will just to softmax
-                    logits = scores/temperature
-                    p = F.softmax(logits, dim=1)
-                    logp = F.log_softmax(logits, dim=1)
-                    soft_choices = [torch.multinomial(p[i], 1, replacement=False)[0].item() for i in range(n_agents)]
-                    # p = 1/(lda + gamma * gap)
-                    greedy_choices = list(scores.argmax(dim=1).detach().numpy())
+                for agent_id in range(n_agents):
+                    # update x_dict to have current agent flag set appropriately
+                    new_x_dict = sample.x_dict
+                    new_x_dict['agent'] = new_x_dict['agent'].clone()
+                    new_x_dict['agent'][agent_id, -1] = 1
 
-                    # calculate value of assignment
-                    # choices = list(scores.argmax(dim=1).detach().numpy())
-                    values = evaluate_assignment(soft_choices, agent_locations, task_locations)
-                    values_greedy = evaluate_assignment(greedy_choices, agent_locations, task_locations)
-                    # value2 = evaluate_assignment(task_assignment, agent_locations, task_locations)
-                    # output has shape [n_agents, n_tasks], and task_assignment has shape [n_agents]
-                    # train outputs to approximate log-scaled value
-                    # logvalue = torch.log1p(torch.tensor(value, dtype=torch.float))
-                    loss = (-logp[torch.arange(0, n_agents), soft_choices] * torch.tensor(values).float()).mean()
+                    out = net(new_x_dict, sample.edge_index_dict)
 
-                    optim.zero_grad()
-                    loss.backward()
-                    optim.step()
-                    lr_scheduler.step()
-                    pbar.set_postfix(loss=f"{loss.item():.3e}")
+                    value_estimates_per_agent.append(
+                        out['agent'][agent_id, 0]
+                    )
+                    logits_per_agent.append(
+                        out['task'][:, 0]
+                    )
 
-                    loss_hist.append(loss.item())
-                    value_hist.append(sum(values))
-                    wandb.log({
-                        "loss": loss.item(),
-                        "value_sum": sum(values),
-                        "value_per_agent": sum(values)/n_agents,
-                        "value_sum_greedy": sum(values_greedy),
-                        "value_per_agent_greedy": sum(values_greedy)/n_agents,
-                        "temperature": temperature,
-                        "lr": optim.param_groups[0]['lr'],
-                    })
-                # reduce gamma each epoch
-                # temperature *= torch.pow(torch.tensor(0.1), 1/epochs)
-        except KeyboardInterrupt:
-            print("interrupting run")
-            pass
+                # Make choices for each agent
+                choices_per_agent = [
+                    torch.multinomial(F.softmax(logits, dim=0), 1).item()
+                    for logits in logits_per_agent
+                ]
 
-        alg = "squarecb-0.3"
+                reward_per_agent = calculate_assignment_reward_per_agent(choices_per_agent, agent_locations, task_locations)
+                value_loss = F.mse_loss(torch.stack(value_estimates_per_agent), torch.tensor(reward_per_agent))
+                logprobs_per_agent = torch.stack(logits_per_agent).log_softmax(dim=-1)
+                chosen_logprobs_tensor = logprobs_per_agent.gather(1, torch.tensor(choices_per_agent).view(-1, 1))
+                delta = (torch.tensor(reward_per_agent) - torch.stack(value_estimates_per_agent)).detach()
+                policy_loss = (-chosen_logprobs_tensor * delta).mean()
+                
+                loss = value_loss + policy_loss
+
+                optim.zero_grad()
+                loss.backward()
+                optim.step()
+                lr_scheduler.step()
+                pbar.set_postfix(loss=f"{loss.item():.3e}")
+
+                loss_hist.append(loss.item())
+                reward_hist.append(sum(reward_per_agent))
+            # reduce gamma each epoch
+            # temperature *= torch.pow(torch.tensor(0.1), 1/epochs)
+
+        alg = "squarecb-0.2-factorized"
         run_id = 0
         os.listdir()
         while any([f'run_{run_id}_' in f for f in os.listdir('runs')]):
@@ -265,7 +264,7 @@ def main():
         os.makedirs(f'runs/run_{run_id}_{alg}')
         os.chdir(f'runs/run_{run_id}_{alg}')
         np.save('loss_hist.npy', loss_hist)
-        np.save('value_hist.npy', value_hist)
+        np.save('value_hist.npy', reward_hist)
         with open("info.json", "w") as f:
             json.dump({
                 "alg": alg,
@@ -290,10 +289,10 @@ def main():
         plt.ylabel("Loss (log)")
         plt.yscale('log')
         # plot value_hist
-        value_hist = np.array(value_hist)
-        value_hist = np.convolve(value_hist, np.ones(100) / 100, mode='valid')
+        reward_hist = np.array(reward_hist)
+        reward_hist = np.convolve(reward_hist, np.ones(100) / 100, mode='valid')
         plt.subplot(2, 1, 2)
-        plt.plot(value_hist)
+        plt.plot(reward_hist)
         plt.title("Value")
         plt.xlabel("Step")
         plt.ylabel("Value")
@@ -320,9 +319,9 @@ def main():
             greedy_choices = list(scores.argmax(dim=1).detach().numpy())
             crossentropy = F.cross_entropy(scores, torch.tensor(task_assignment).long())
             print("eval crossentropy:", crossentropy.item())
-            print("soft eval value:", sum(evaluate_assignment(soft_choices, agent_locations, task_locations)))
-            print("greedy eval value:", sum(evaluate_assignment(greedy_choices, agent_locations, task_locations)))
-            print("true value:", sum(evaluate_assignment(task_assignment, agent_locations, task_locations)))
+            print("soft eval value:", sum(calculate_assignment_reward_per_agent(soft_choices, agent_locations, task_locations)))
+            print("greedy eval value:", sum(calculate_assignment_reward_per_agent(greedy_choices, agent_locations, task_locations)))
+            print("true value:", sum(calculate_assignment_reward_per_agent(task_assignment, agent_locations, task_locations)))
             print("pred assignment:", soft_choices)
             print("greedy assignment:", greedy_choices)
             print("true assignment:", task_assignment)
