@@ -154,7 +154,7 @@ def calculate_assignment_reward_per_agent(choices, agent_locations, task_locatio
             agent_values[least_cost_agent] = 1 # 1 * np.exp(-least_cost / 40)
     # calculate cost incurred by moving far
     for agent_id, choice in enumerate(choices):
-        movement_cost = (1/100 * 1/100)
+        movement_cost = (1/100)
         agent_values[agent_id] -= float(np.linalg.norm(agent_locations[agent_id] - task_locations[choice])) * movement_cost
 
     return agent_values
@@ -217,7 +217,7 @@ def main():
     scale = torch.nn.Parameter(torch.tensor(1.0))
 
     skip = False
-    # os.chdir('runs/run_7')
+    # os.chdir('runs/run_27_reinforce_with_separate_policies')
     # net.load_state_dict(torch.load("model.pth"))
     # skip = True
 
@@ -260,10 +260,11 @@ def main():
                 logprobs_per_agent, value_estimates_per_agent = multiagent_forward(net, sample)
 
                 # Make choices for each agent
-                choices_per_agent = [
-                    torch.multinomial(F.softmax(logits / temperature, dim=0), 1).item()
-                    for logits in logprobs_per_agent
-                ]
+                # choices_per_agent = [
+                #     torch.multinomial(F.softmax(logits / temperature, dim=0), 1).item()
+                #     for logits in logprobs_per_agent
+                # ]
+                choices_per_agent = logprobs_per_agent.argmax(dim=1).numpy()
 
                 reward_per_agent = calculate_assignment_reward_per_agent(choices_per_agent, agent_locations, task_locations)
                 value_loss = F.mse_loss(torch.stack(value_estimates_per_agent), torch.tensor(reward_per_agent))
@@ -338,9 +339,15 @@ def main():
         plt.show()
 
     # eval
+    softs = []
+    greedys = []
+    trues = []
+    randoms = []
     with torch.no_grad():
         temperature = 0.5
-        for (sample, agent_locations, task_locations, task_assignment) in test:
+        for i, (sample, agent_locations, task_locations, task_assignment) in (pbar := tqdm.tqdm(enumerate(test), desc='Evaluating...')):
+            display = (i == 0) and True
+
             logprobs_per_agent, value_estimates_per_agent = multiagent_forward(net, sample)
             
             choices_per_agent = [
@@ -349,64 +356,91 @@ def main():
             ]
             choices_per_agent_greedy = logprobs_per_agent.argmax(dim=1).numpy()
 
-            print("soft eval value:", sum(calculate_assignment_reward_per_agent(choices_per_agent, agent_locations, task_locations)))
-            print("greedy eval value:", sum(calculate_assignment_reward_per_agent(choices_per_agent_greedy, agent_locations, task_locations)))
-            print("true value:", sum(calculate_assignment_reward_per_agent(task_assignment, agent_locations, task_locations)))
-            print("pred assignment:", choices_per_agent)
-            print("greedy assignment:", choices_per_agent_greedy)
-            print("true assignment:", task_assignment)
-            print()
-            
-            # plot scores matrix
-            plt.title("Scores matrix")
-            plt.xlabel("Task")
-            plt.ylabel("Agent")
-            plt.imshow(logprobs_per_agent.detach().numpy())
-            plt.colorbar()
-            plt.show()
+            random_choices = [random.randint(0, n_tasks - 1) for _ in range(n_agents)]
 
-            # plot soft value
-            plt.subplot(2, 1, 1)
-            plt.scatter(agent_locations[:, 0], agent_locations[:, 1], color='blue', label='agent locations')
-            plt.scatter(task_locations[:, 0], task_locations[:, 1], color='red', label='task locations')
-            for agent_i, task_i in zip(range(len(agent_locations)), task_assignment):
-                plt.plot(
-                    [agent_locations[agent_i, 0], task_locations[task_i, 0]],
-                    [agent_locations[agent_i, 1], task_locations[task_i, 1]],
-                    color='green', label='true' if agent_i == 0 else None, linewidth=3
-                )
-            for agent_i, task_i in zip(range(len(agent_locations)), choices_per_agent):
-                task_i = int(task_i)
-                plt.plot(
-                    [agent_locations[agent_i, 0] + 0.5, task_locations[task_i, 0] + 0.5],
-                    [agent_locations[agent_i, 1] + 0.5, task_locations[task_i, 1] + 0.5],
-                    color='purple', label='pred' if agent_i == 0 else None, linewidth=3
-                )
+            soft_eval_value = sum(calculate_assignment_reward_per_agent(choices_per_agent, agent_locations, task_locations))
+            greedy_eval_value = sum(calculate_assignment_reward_per_agent(choices_per_agent_greedy, agent_locations, task_locations))
+            true_value = sum(calculate_assignment_reward_per_agent(task_assignment, agent_locations, task_locations))
+            random_value = sum(calculate_assignment_reward_per_agent(random_choices, agent_locations, task_locations))
+            softs.append(soft_eval_value)
+            greedys.append(greedy_eval_value)
+            trues.append(true_value)
+            randoms.append(random_value)
 
-            plt.legend()
+            if display:
+                print("soft eval value:", soft_eval_value)
+                print("greedy eval value:", greedy_eval_value)
+                print("true value:", true_value)
+                print("random value:", random_value)
+                print("pred assignment:", choices_per_agent)
+                print("greedy assignment:", choices_per_agent_greedy)
+                print("true assignment:", task_assignment)
+                print()
+                
+                # plot scores matrix
+                plt.title("Scores matrix")
+                plt.xlabel("Task")
+                plt.ylabel("Agent")
+                plt.imshow(logprobs_per_agent.detach().numpy())
+                plt.colorbar()
+                plt.show()
 
-            # plot greedy value
-            plt.subplot(2, 1, 2)
-            plt.scatter(agent_locations[:, 0], agent_locations[:, 1], color='blue', label='agent locations')
-            plt.scatter(task_locations[:, 0], task_locations[:, 1], color='red', label='task locations')
-            for agent_i, task_i in zip(range(len(agent_locations)), task_assignment):
-                plt.plot(
-                    [agent_locations[agent_i, 0], task_locations[task_i, 0]],
-                    [agent_locations[agent_i, 1], task_locations[task_i, 1]],
-                    color='green', label='true' if agent_i == 0 else None, linewidth=3
-                )
-            for agent_i, task_i in zip(range(len(agent_locations)), choices_per_agent_greedy):
-                task_i = int(task_i)
-                plt.plot(
-                    [agent_locations[agent_i, 0] + 0.5, task_locations[task_i, 0] + 0.5],
-                    [agent_locations[agent_i, 1] + 0.5, task_locations[task_i, 1] + 0.5],
-                    color='purple', label='pred' if agent_i == 0 else None, linewidth=3
-                )
+                # plot soft value
+                plt.subplot(2, 1, 1)
+                plt.scatter(agent_locations[:, 0], agent_locations[:, 1], color='blue', label='agent locations')
+                plt.scatter(task_locations[:, 0], task_locations[:, 1], color='red', label='task locations')
+                for agent_i, task_i in zip(range(len(agent_locations)), task_assignment):
+                    plt.plot(
+                        [agent_locations[agent_i, 0], task_locations[task_i, 0]],
+                        [agent_locations[agent_i, 1], task_locations[task_i, 1]],
+                        color='green', label='true' if agent_i == 0 else None, linewidth=3
+                    )
+                for agent_i, task_i in zip(range(len(agent_locations)), choices_per_agent):
+                    task_i = int(task_i)
+                    plt.plot(
+                        [agent_locations[agent_i, 0] + 0.5, task_locations[task_i, 0] + 0.5],
+                        [agent_locations[agent_i, 1] + 0.5, task_locations[task_i, 1] + 0.5],
+                        color='purple', label='pred' if agent_i == 0 else None, linewidth=3
+                    )
 
-            plt.legend()
-            plt.show()
+                plt.legend()
 
-            exit()
+                # plot greedy value
+                plt.subplot(2, 1, 2)
+                plt.scatter(agent_locations[:, 0], agent_locations[:, 1], color='blue', label='agent locations')
+                plt.scatter(task_locations[:, 0], task_locations[:, 1], color='red', label='task locations')
+                for agent_i, task_i in zip(range(len(agent_locations)), task_assignment):
+                    plt.plot(
+                        [agent_locations[agent_i, 0], task_locations[task_i, 0]],
+                        [agent_locations[agent_i, 1], task_locations[task_i, 1]],
+                        color='green', label='true' if agent_i == 0 else None, linewidth=3
+                    )
+                for agent_i, task_i in zip(range(len(agent_locations)), choices_per_agent_greedy):
+                    task_i = int(task_i)
+                    plt.plot(
+                        [agent_locations[agent_i, 0] + 0.5, task_locations[task_i, 0] + 0.5],
+                        [agent_locations[agent_i, 1] + 0.5, task_locations[task_i, 1] + 0.5],
+                        color='purple', label='pred' if agent_i == 0 else None, linewidth=3
+                    )
+
+                plt.legend()
+                plt.show()
+
+    trues = np.array(trues)
+    print("mean true:", trues.mean())
+    print("std true:", trues.std())
+
+    softs = np.array(softs)
+    print("mean soft:", softs.mean())
+    print("std soft:", softs.std())
+
+    greedys = np.array(greedys)
+    print("mean greedy:", greedys.mean())
+    print("std greedy:", greedys.std())
+
+    randoms = np.array(randoms)
+    print("mean random:", randoms.mean())
+    print("std random:", randoms.std())
 
 if __name__ == '__main__':
     main()
