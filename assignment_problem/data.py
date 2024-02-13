@@ -39,15 +39,18 @@ def one_hot_2d(positions: torch.Tensor, width: int, height: int):
     y_emb = nn.functional.one_hot(positions[..., 1], num_classes=height)
     return torch.concatenate([x_emb, y_emb], dim=-1)
 
-def create_heterodata(width, height, agent_locations, task_locations):
+def create_heterodata(width, height, agent_locations, task_locations, allow_agent_to_task=True):
     data = HeteroData()
     data['agent'].x = one_hot_2d(torch.tensor(agent_locations, dtype=torch.long), width, height).float()
     data['task'].x = one_hot_2d(torch.tensor(task_locations, dtype=torch.long), width, height).float()
     # tasks <-> agents
-    data['agent', 'sees', 'task'].edge_index = torch.tensor([
-        [i for i in range(agent_locations.shape[0]) for j in range(task_locations.shape[0])],
-        [j for i in range(agent_locations.shape[0]) for j in range(task_locations.shape[0])]
-    ], dtype=torch.long)
+    if allow_agent_to_task:
+        data['agent', 'sees', 'task'].edge_index = torch.tensor([
+            [i for i in range(agent_locations.shape[0]) for j in range(task_locations.shape[0])],
+            [j for i in range(agent_locations.shape[0]) for j in range(task_locations.shape[0])]
+        ], dtype=torch.long)
+    else:
+        data['agent', 'sees', 'task'].edge_index = torch.zeros((2, 0), dtype=torch.long)
     data['task', 'sees', 'agent'].edge_index = torch.tensor([
         [i for i in range(task_locations.shape[0]) for j in range(agent_locations.shape[0])],
         [j for i in range(task_locations.shape[0]) for j in range(agent_locations.shape[0])]
