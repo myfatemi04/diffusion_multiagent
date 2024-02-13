@@ -210,11 +210,7 @@ def main():
 
     # populate the channel sizes by passing in a dummy dataset of the same shape
     with torch.no_grad():
-        out = net(dummy.x_dict, dummy.edge_index_dict)
-        # now we can see that the output is a dictionary with keys 'agent' and 'task'
-        # print(out.keys())
-    # used in CLIP, going to use it here
-    scale = torch.nn.Parameter(torch.tensor(1.0))
+        net(dummy.x_dict, dummy.edge_index_dict)
 
     skip = False
     # os.chdir('runs/run_27_reinforce_with_separate_policies')
@@ -269,7 +265,9 @@ def main():
                 reward_per_agent = calculate_assignment_reward_per_agent(choices_per_agent, agent_locations, task_locations)
                 value_loss = F.mse_loss(torch.stack(value_estimates_per_agent), torch.tensor(reward_per_agent))
                 chosen_logprobs_tensor = logprobs_per_agent.gather(1, torch.tensor(choices_per_agent).view(-1, 1))
-                delta = (torch.tensor(reward_per_agent) - torch.stack(value_estimates_per_agent)).detach()
+                delta = (
+                    torch.tensor(reward_per_agent)
+                ).detach()
                 policy_loss = (-chosen_logprobs_tensor * delta).mean()
                 
                 loss = value_loss + policy_loss
