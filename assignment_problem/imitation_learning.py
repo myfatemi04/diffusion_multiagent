@@ -15,7 +15,7 @@ How do we define collaborative tasks?
 
 import json
 import os
-import random
+import visualize
 from typing import List, Tuple
 import torch
 import torch.nn as nn
@@ -169,34 +169,6 @@ def evaluate_assignment(choices, agent_locations, task_locations):
 
     return sum(agent_values)
 
-# def evaluate_assignment(choices, agent_locations, task_locations):
-#     agent_task_distance = np.linalg.norm(
-#         agent_locations[:, None, :].repeat(len(task_locations), axis=1) -
-#         task_locations[None, :, :].repeat(len(agent_locations), axis=0),
-#         axis=2
-#     )
-#     # calculate a value for each agent
-#     agent_values = [0.] * len(agent_locations)
-#     for task_id in range(n_tasks):
-#         least_cost = None
-#         least_cost_agent = None
-#         for agent_id, choice in enumerate(choices):
-#             if choice == task_id:
-#                 if least_cost is None or agent_task_distance[choice, task_id] < least_cost:
-#                     least_cost = agent_task_distance[choice, task_id]
-#                     least_cost_agent = agent_id
-#         if least_cost is not None:
-#             assert least_cost_agent is not None
-#             # 10 can be reconfigured to mean a decay rate
-#             # agent_values[least_cost_agent] = 1 * np.exp(-least_cost / 40)
-#             # give a reward of 1
-#             agent_values[least_cost_agent] = 1 # 1 * np.exp(-least_cost / 40)
-#     # calculate cost incurred by moving far
-#     for agent_id, choice in enumerate(choices):
-#         movement_cost = (1/100 * 1/100)
-#         agent_values[agent_id] -= float(np.linalg.norm(agent_locations[agent_id] - task_locations[choice])) * movement_cost
-#     return sum(agent_values)
-
 def main():
     import random
     random.seed(0)
@@ -244,10 +216,10 @@ def main():
             for (sample, agent_locations, task_locations, task_assignment) in (pbar := tqdm.tqdm(train, desc=f'Epoch {ep}')):
                 out = net(sample.x_dict, sample.edge_index_dict)
                 # create assignment matrix
-                scores: torch.Tensor = (out['agent'] @ out['task'].T) * scale
-                loss = F.cross_entropy(scores, torch.tensor(task_assignment).long())
+                logprobs_table: torch.Tensor = (out['agent'] @ out['task'].T) * scale
+                loss = F.cross_entropy(logprobs_table, torch.tensor(task_assignment).long())
                 # calculate value of assignment
-                choices = list(scores.argmax(dim=1).detach().numpy())
+                choices = list(logprobs_table.argmax(dim=1).detach().numpy())
                 value = evaluate_assignment(choices, agent_locations, task_locations)
 
                 optim.zero_grad()
@@ -278,28 +250,8 @@ def main():
                 "epochs": epochs,
                 "sizes": sizes,
             }, f)
-    
-        # plot loss_hist
-        loss_hist = np.array(loss_hist)
-        loss_hist = np.convolve(loss_hist, np.ones(100) / 100, mode='valid')
-        plt.subplot(2, 1, 1)
-        plt.plot(loss_hist)
-        plt.title("Loss")
-        plt.xlabel("Step")
-        plt.ylabel("Loss (log)")
-        plt.yscale('log')
-        # plot value_hist
-        value_hist = np.array(value_hist)
-        value_hist = np.convolve(value_hist, np.ones(100) / 100, mode='valid')
-        plt.subplot(2, 1, 2)
-        plt.plot(value_hist)
-        plt.title("Value")
-        plt.xlabel("Step")
-        plt.ylabel("Value")
-        # save
-        plt.tight_layout()
-        plt.savefig("loss_value.png")
-        plt.show()
+
+        visualize.plot_loss_and_reward(loss_hist, value_hist)
 
         torch.save(net.state_dict(), "model.pth")
 
@@ -313,50 +265,19 @@ def main():
             display = (i == 0) and True
 
             out = net(sample.x_dict, sample.edge_index_dict)
-            scores = (out['agent'] @ out['task'].T) * scale
-            loss = F.cross_entropy(scores, torch.tensor(task_assignment).long())
-            neural_assn = scores.argmax(dim=1).numpy()
-            eval_value = evaluate_assignment(neural_assn, agent_locations, task_locations)
-            true_value = evaluate_assignment(task_assignment, agent_locations, task_locations)
-            random_choices = [random.randint(0, n_tasks - 1) for _ in range(n_agents)]
-            random_value = evaluate_assignment(random_choices, agent_locations, task_locations)
+            logprobs_table = (out['agent'] @ out['task'].T) * scale
+
+            eval_value, true_value, random_value = visualize.evaluate(
+                logprobs_table,
+                agent_locations,
+                task_locations,
+                task_assignment,
+                display=display
+            )
+            
             evaluation.append(eval_value)
             trues.append(true_value)
             randoms.append(random_value)
-            if display:
-                print("eval crossentropy:", loss.item())
-                print("eval value:", eval_value)
-                print("true value:", true_value)
-                print("pred assignment:", neural_assn)
-                print("true assignment:", task_assignment)
-                print()
-
-                # plot scores matrix
-                plt.title("Scores matrix")
-                plt.xlabel("Task")
-                plt.ylabel("Agent")
-                plt.imshow(scores.numpy())
-                plt.colorbar()
-                plt.savefig("scores_matrix.png")
-                plt.show()
-
-                plt.scatter(agent_locations[:, 0], agent_locations[:, 1], color='blue', label='agent locations')
-                plt.scatter(task_locations[:, 0], task_locations[:, 1], color='red', label='task locations')
-                for agent_i, task_i in zip(range(len(agent_locations)), task_assignment):
-                    plt.plot(
-                        [agent_locations[agent_i, 0], task_locations[task_i, 0]],
-                        [agent_locations[agent_i, 1], task_locations[task_i, 1]],
-                        color='green', label='true' if agent_i == 0 else None, linewidth=3
-                    )
-                for agent_i, task_i in zip(range(len(agent_locations)), neural_assn):
-                    plt.plot(
-                        [agent_locations[agent_i, 0] + 0.5, task_locations[task_i, 0] + 0.5],
-                        [agent_locations[agent_i, 1] + 0.5, task_locations[task_i, 1] + 0.5],
-                        color='purple', label='pred' if agent_i == 0 else None, linewidth=3
-                    )
-
-                plt.legend()
-                plt.show()
     
     evaluation = np.array(evaluation)
     print("mean evaluation:", evaluation.mean())
