@@ -125,29 +125,59 @@ environment = E.TaskSimulator(
     E.Task(x=5, y=5, reward=1),
   ]
 )
+policy = Policy(64, 3, 11, 1, num_actions=5)
+optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
 
-state, available_actions, rewards, done = environment.reset()
-state_action_reward_tuples = []
 
-for step in range(100):
-  feature_map = generate_local_feature_map('agent:0', state, 5)
+for episode in range(100):
+  state, available_actions, rewards, done = environment.reset()
+  state_action_reward_tuples = []
+  for step in range(20):
+    feature_map = generate_local_feature_map('agent:0', state, 5)
 
-  policy = Policy(64, 3, 11, 1, num_actions=5)
-  action_logits = policy(feature_map.unsqueeze(0))
+    action_logit_vector = policy(feature_map.unsqueeze(0))
 
-  available_actions = available_actions['agent:0']
-  selection_index = torch.multinomial(torch.softmax(action_logits[0, available_actions], dim=-1), 1, False)
-  action = available_actions[selection_index]
+    available_actions = available_actions['agent:0']
+    selection_index = torch.multinomial(torch.softmax(action_logit_vector[0, available_actions], dim=-1), 1, False)
+    action = available_actions[selection_index]
 
-  state, available_actions, rewards, done = environment.step({"agent:0": action})
+    state, available_actions, rewards, done = environment.step({"agent:0": action})
 
-  state_action_reward_tuples.append((feature_map, action, rewards['agent:0']))
+    state_action_reward_tuples.append((feature_map, action, rewards['agent:0']))
 
-  if done:
-    break
+    if done:
+      break
 
-  plt.clf()
-  plt.title("Feature Map")
-  plt.imshow(feature_map)
-  plt.pause(0.01)
+    plt.clf()
+    plt.title("Feature Map")
+    plt.imshow(feature_map)
+    plt.pause(0.01)
 
+  # Backpropagation
+  optimizer.zero_grad()
+
+  discount_factor = 0.9
+  discounted_rewards = [state_action_reward_tuples[-1][2]]
+  for i in range(len(state_action_reward_tuples) - 2, -1, -1):
+    reward_at_step_i = state_action_reward_tuples[i][2]
+    discounted_reward_at_step_i = reward_at_step_i + discount_factor * discounted_rewards[-1]
+    discounted_rewards.append(discounted_reward_at_step_i)
+
+  discounted_rewards = torch.tensor(discounted_rewards[::-1], dtype=torch.float32)
+
+  # Calculate model output for each feature map
+  feature_map_batch = torch.stack([t[0] for t in state_action_reward_tuples])
+  action_logit_vector = policy(feature_map_batch)
+  action_logprob_vector = torch.log_softmax(action_logit_vector, dim=-1)
+  action_logprobs = action_logprob_vector[
+    # Each timestep
+    range(len(state_action_reward_tuples)),
+    # Selected action
+    [t[1] for t in state_action_reward_tuples]
+  ]
+  loss = -torch.mean(action_logprobs * discounted_rewards)
+  loss.backward()
+  print(loss.item(), rewards['agent:0'])
+  optimizer.step()
+
+torch.save(policy.state_dict(), "policy.pt")

@@ -61,8 +61,8 @@ class TaskSimulator:
 
     def reset(self):
         self.tasks = copy.deepcopy(self._original_tasks)
-        self.agent_extrinsics['agent:0'].x = 0
-        self.agent_extrinsics['agent:0'].y = 0
+        self.agent_extrinsics['agent:0'].x = np.random.randint(0, self.width)
+        self.agent_extrinsics['agent:0'].y = np.random.randint(0, self.height)
 
         # Return the state information, the set of valid actions, and the reward vector.
         num_incomplete_tasks = sum(1 for task in self.tasks if not task.completed)
@@ -118,6 +118,7 @@ class TaskSimulator:
             pos = self.agent_extrinsics[agent_tag]
             if action[agent_tag] == 0:
                 continue
+            
             if action[agent_tag] == 1:
                 pos.x += 1
             if action[agent_tag] == 2:
@@ -126,6 +127,9 @@ class TaskSimulator:
                 pos.x -= 1
             if action[agent_tag] == 4:
                 pos.y -= 1
+
+            # Slightly penalize movements
+            rewards[agent_tag] = -0.05
             
             assert (0 <= pos.x < self.width and 0 <= pos.y < self.height), f"Agent {agent_tag} tried to move out of bounds."
 
