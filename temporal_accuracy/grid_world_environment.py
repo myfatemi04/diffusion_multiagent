@@ -1,0 +1,129 @@
+import copy
+from dataclasses import dataclass
+
+import numpy as np
+
+"""
+::: Multi-Agent Simulator Paradigm :::
+
+There is a clock which will `tick` the environment at a set rate.
+During each `tick`, each agent selects an action.
+
+The environment will share full state information at each step. It is
+the responsibility of the caller to ensure that decentralized execution
+is valid. I provide methods that mask out tiles that are out of view
+for each agent.
+
+The caller takes actions on behalf of all the agents, and sends the joint
+action vector into the `step` function.
+
+Each agent has `intrinsic` and `extrinsic` information. Extrinsic information,
+like where the agent is in the environment, is managed by the simulator.
+Intrinsic information, like which team the agent is on, is encapsulated in an
+`Agent` class. This `Agent` class will be the class that manages partial observability.
+
+Each agent has a globally-unique identifier called a `tag`. This is used for taking
+actions.
+"""
+
+@dataclass
+class Agent:
+    tag: str
+
+@dataclass
+class AgentExtrinsics:
+    x: int
+    y: int
+
+@dataclass
+class Task:
+    x: int
+    y: int
+    reward: float
+    completed: bool = False
+
+@dataclass
+class GlobalState:
+    tasks: list[Task]
+    agent_positions: dict[str, AgentExtrinsics]
+
+class TaskSimulator:
+    def __init__(self, grid: np.ndarray, tasks: list[Task]):
+        self._original_tasks = copy.deepcopy(tasks)
+        self.tasks = tasks
+        self.agents = ['agent:0']
+        self.agent_extrinsics = {
+            'agent:0': AgentExtrinsics(x=0, y=0)
+        }
+        self.grid = grid
+
+    def reset(self):
+        self.tasks = copy.deepcopy(self._original_tasks)
+        self.agent_extrinsics['agent:0'].x = 0
+        self.agent_extrinsics['agent:0'].y = 0
+
+    @property
+    def width(self):
+        return self.grid.shape[1]
+    
+    @property
+    def height(self):
+        return self.grid.shape[0]
+
+    """ Determine the action space for each agent. """
+    def valid_actions(self):
+        actions = {}
+        for agent in self.agents:
+            pos = self.agent_extrinsics[agent]
+            actions[agent] = [0]
+            if pos.x < self.width - 1:
+                actions[agent].append(1)
+            if pos.y < self.height - 1:
+                actions[agent].append(2)
+            if pos.x > 0:
+                actions[agent].append(3)
+            if pos.y > 0:
+                actions[agent].append(4)
+        return actions
+    
+    def step(self, action) -> tuple[GlobalState, dict[str, list[int]], dict[str, float], bool]:
+        assert len(action) == len(self.agents), "Action vector must have the same length as the number of agents."
+
+        rewards = {}
+
+        for i, agent in enumerate(self.agents):
+            pos = self.agent_extrinsics[agent]
+            if action[i] == 0:
+                continue
+            if action[i] == 1:
+                pos.x += 1
+            if action[i] == 2:
+                pos.y += 1
+            if action[i] == 3:
+                pos.x -= 1
+            if action[i] == 4:
+                pos.y -= 1
+            
+            assert (0 <= pos.x < self.width and 0 <= pos.y < self.height), f"Agent {agent} tried to move out of bounds."
+
+            rewards[agent] = 0
+            for task in self.tasks:
+                if task.completed:
+                    continue
+
+                if task.x == pos.x and task.y == pos.y:
+                    task.completed = True
+                    rewards[agent] += task.reward
+
+        # Return the state information, the set of valid actions, and the reward vector.
+        num_incomplete_tasks = sum(1 for task in self.tasks if not task.completed)
+        
+        state = GlobalState(
+            tasks=copy.deepcopy(self.tasks),
+            agent_positions=copy.deepcopy(self.agent_extrinsics),
+        )
+        action_space = self.valid_actions()
+        reward = rewards
+        done = num_incomplete_tasks == 0
+
+        return (state, action_space, reward, done)
