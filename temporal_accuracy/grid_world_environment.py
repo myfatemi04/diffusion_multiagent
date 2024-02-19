@@ -59,7 +59,7 @@ class TaskSimulator:
         }
         self.grid = grid
 
-    def reset(self):
+    def reset(self) -> tuple[GlobalState, dict[str, list[int]], dict[str, float], bool]:
         self.tasks = copy.deepcopy(self._original_tasks)
         self.agent_extrinsics['agent:0'].x = np.random.randint(0, self.width)
         self.agent_extrinsics['agent:0'].y = np.random.randint(0, self.height)
@@ -69,7 +69,7 @@ class TaskSimulator:
         
         state = self.state
         action_space = self.valid_actions()
-        reward = {agent: 0 for agent in self.agents}
+        reward = {agent: 0.0 for agent in self.agents}
         done = num_incomplete_tasks == 0
 
         return (state, action_space, reward, done)
@@ -83,7 +83,7 @@ class TaskSimulator:
         return self.grid.shape[0]
 
     """ Determine the action space for each agent. """
-    def valid_actions(self):
+    def valid_actions(self) -> dict[str, list[int]]:
         actions = {}
         for agent in self.agents:
             pos = self.agent_extrinsics[agent]

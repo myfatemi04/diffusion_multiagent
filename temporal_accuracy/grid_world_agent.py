@@ -12,6 +12,7 @@ from matplotlib import pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 import grid_world_environment as E
 
@@ -99,12 +100,16 @@ class Policy(nn.Module):
       ),
       num_layers=6,
     )
-    self.action_head = nn.Linear(d_model, num_actions)
+    self.action_head = nn.Linear(d_model, num_actions * 2)
 
   def forward(self, feature_map: torch.Tensor):
     """
     :params:
     - feature_map: torch.Tensor - The feature map to process
+
+    :returns:
+    - action_logits: torch.Tensor - The logits for each action
+    - action_values: torch.Tensor - The value estimates for each action
     """
     # Patchify the feature map
     batch_size = feature_map.shape[0]
@@ -116,68 +121,108 @@ class Policy(nn.Module):
     action_embedding = self.action_embedding.unsqueeze(0).unsqueeze(0).repeat(batch_size, 1, 1)
     tokens = torch.cat([action_embedding, feature_map], dim=1)
     tokens = self.transformer_encoder(tokens)
-    action_logits = self.action_head(tokens[:, 0, :])
-    return action_logits
+    action_output = self.action_head(tokens[:, 0, :])
+    action_logits = action_output[:, :self.num_actions]
+    action_values = action_output[:, self.num_actions:]
+    return (action_logits, action_values)
 
-environment = E.TaskSimulator(
-  grid=np.zeros((10, 10)),
-  tasks=[
-    E.Task(x=5, y=5, reward=1),
-  ]
-)
-policy = Policy(64, 3, 11, 1, num_actions=5)
-optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
+def main():
+  environment = E.TaskSimulator(
+    grid=np.zeros((20, 20)),
+    tasks=[
+      E.Task(x=5, y=5, reward=1),
+      E.Task(x=15, y=15, reward=1),
+    ]
+  )
+  policy = Policy(64, 3, 11, 1, num_actions=5)
+  optimizer = torch.optim.Adam(policy.parameters(), lr=1e-3)
 
 
-for episode in range(100):
-  state, available_actions, rewards, done = environment.reset()
-  state_action_reward_tuples = []
-  for step in range(20):
-    feature_map = generate_local_feature_map('agent:0', state, 5)
+  for episode in range(100):
+    state, action_availability_per_agent, reward_per_agent, done = environment.reset()
 
-    action_logit_vector = policy(feature_map.unsqueeze(0))
+    # Create state-action-reward streams for each agent.
+    SAR_tuples_per_agent = {agent: [] for agent in environment.agents}
+    for step in range(20):
+      # Simultaneously generate an action for all agents
+      action_selection_per_agent = {}
+      for agent in environment.agents:
+        # This feature map represents this specific agent's field of view
+        feature_map = generate_local_feature_map(agent, state, 5)
 
-    available_actions = available_actions['agent:0']
-    selection_index = torch.multinomial(torch.softmax(action_logit_vector[0, available_actions], dim=-1), 1, False)
-    action = available_actions[selection_index]
+        # action_value_vector is not used during action selection, only to stabilize training
+        action_logit_vector, _action_value_vector = policy(feature_map.unsqueeze(0))
+        action_availability = action_availability_per_agent[agent]
+        action_probability_vector = torch.softmax(action_logit_vector[0, action_availability], dim=-1)
 
-    state, available_actions, rewards, done = environment.step({"agent:0": action})
+        selection_index = torch.multinomial(action_probability_vector, 1, False)
+        action_selection_per_agent[agent] = action_availability[selection_index]
 
-    state_action_reward_tuples.append((feature_map, action, rewards['agent:0']))
+      # Simultaneously take action step
+      state, action_availability_per_agent, reward_per_agent, done = environment.step(action_selection_per_agent)
 
-    if done:
-      break
+      for agent in environment.agents:
+        SAR_tuples_per_agent[agent].append((
+          feature_map,
+          action_selection_per_agent[agent],
+          reward_per_agent[agent]
+        ))
 
-    plt.clf()
-    plt.title("Feature Map")
-    plt.imshow(feature_map)
-    plt.pause(0.01)
+      if done:
+        break
 
-  # Backpropagation
-  optimizer.zero_grad()
+      plt.clf()
+      plt.title("Feature Map")
+      plt.imshow(feature_map)
+      plt.pause(0.01)
 
-  discount_factor = 0.9
-  discounted_rewards = [state_action_reward_tuples[-1][2]]
-  for i in range(len(state_action_reward_tuples) - 2, -1, -1):
-    reward_at_step_i = state_action_reward_tuples[i][2]
-    discounted_reward_at_step_i = reward_at_step_i + discount_factor * discounted_rewards[-1]
-    discounted_rewards.append(discounted_reward_at_step_i)
+    # Backpropagation
+    optimizer.zero_grad()
 
-  discounted_rewards = torch.tensor(discounted_rewards[::-1], dtype=torch.float32)
+    total_loss = 0
 
-  # Calculate model output for each feature map
-  feature_map_batch = torch.stack([t[0] for t in state_action_reward_tuples])
-  action_logit_vector = policy(feature_map_batch)
-  action_logprob_vector = torch.log_softmax(action_logit_vector, dim=-1)
-  action_logprobs = action_logprob_vector[
-    # Each timestep
-    range(len(state_action_reward_tuples)),
-    # Selected action
-    [t[1] for t in state_action_reward_tuples]
-  ]
-  loss = -torch.mean(action_logprobs * discounted_rewards)
-  loss.backward()
-  print(loss.item(), rewards['agent:0'])
-  optimizer.step()
+    # Accumulate gradients for each agent
+    for agent in environment.agents:
+      SAR_tuples = SAR_tuples_per_agent[agent]
+      discount_factor = 0.9
+      discounted_rewards = [SAR_tuples[-1][2]]
+      for i in range(len(SAR_tuples) - 2, -1, -1):
+        reward_at_step_i = SAR_tuples[i][2]
+        discounted_reward_at_step_i = reward_at_step_i + discount_factor * discounted_rewards[-1]
+        discounted_rewards.append(discounted_reward_at_step_i)
 
-torch.save(policy.state_dict(), "policy.pt")
+      discounted_rewards = torch.tensor(discounted_rewards[::-1], dtype=torch.float32)
+
+      # Calculate model output for each feature map
+      feature_map_batch = torch.stack([t[0] for t in SAR_tuples])
+      action_logit_vector, action_value_vector = policy(feature_map_batch)
+      action_logprob_vector = torch.log_softmax(action_logit_vector, dim=-1)
+      action_logprobs = action_logprob_vector[
+        # Each timestep
+        range(len(SAR_tuples)),
+        # Selected action
+        [t[1] for t in SAR_tuples]
+      ]
+      action_values = action_value_vector[
+        # Each timestep
+        range(len(SAR_tuples)),
+        # Selected action
+        [t[1] for t in SAR_tuples]
+      ]
+      # Actor-Critic loss
+      advantage = discounted_rewards - action_values
+      critic_loss = F.mse_loss(action_value_vector, discounted_rewards)
+      actor_loss = torch.mean(-action_logprobs * advantage.detach())
+      agent_loss = critic_loss + actor_loss
+      agent_loss.backward()
+
+      total_loss += agent_loss.item()
+
+    # Take optimization step after all agents have had gradient updates allowed
+    optimizer.step()
+    print(total_loss / len(environment.agents), reward_per_agent)
+
+  torch.save(policy.state_dict(), "policy.pt")
+
+if __name__ == "__main__":
+  main()
