@@ -46,6 +46,8 @@ class Task:
 class GlobalState:
     tasks: list[Task]
     agent_positions: dict[str, AgentExtrinsics]
+    width: int
+    height: int
 
 class TaskSimulator:
     def __init__(self, grid: np.ndarray, tasks: list[Task]):
@@ -62,6 +64,16 @@ class TaskSimulator:
         self.agent_extrinsics['agent:0'].x = 0
         self.agent_extrinsics['agent:0'].y = 0
 
+        # Return the state information, the set of valid actions, and the reward vector.
+        num_incomplete_tasks = sum(1 for task in self.tasks if not task.completed)
+        
+        state = self.state
+        action_space = self.valid_actions()
+        reward = {agent: 0 for agent in self.agents}
+        done = num_incomplete_tasks == 0
+
+        return (state, action_space, reward, done)
+
     @property
     def width(self):
         return self.grid.shape[1]
@@ -75,7 +87,7 @@ class TaskSimulator:
         actions = {}
         for agent in self.agents:
             pos = self.agent_extrinsics[agent]
-            actions[agent] = [0]
+            actions[agent] = []
             if pos.x < self.width - 1:
                 actions[agent].append(1)
             if pos.y < self.height - 1:
@@ -86,44 +98,50 @@ class TaskSimulator:
                 actions[agent].append(4)
         return actions
     
+    @property
+    def state(self):
+        return GlobalState(
+            tasks=copy.deepcopy(self.tasks),
+            agent_positions=copy.deepcopy(self.agent_extrinsics),
+            width=self.width,
+            height=self.height
+        )
+    
     def step(self, action) -> tuple[GlobalState, dict[str, list[int]], dict[str, float], bool]:
         assert len(action) == len(self.agents), "Action vector must have the same length as the number of agents."
 
         rewards = {}
 
-        for i, agent in enumerate(self.agents):
-            pos = self.agent_extrinsics[agent]
-            if action[i] == 0:
+        for i, agent_tag in enumerate(self.agents):
+            rewards[agent_tag] = 0
+
+            pos = self.agent_extrinsics[agent_tag]
+            if action[agent_tag] == 0:
                 continue
-            if action[i] == 1:
+            if action[agent_tag] == 1:
                 pos.x += 1
-            if action[i] == 2:
+            if action[agent_tag] == 2:
                 pos.y += 1
-            if action[i] == 3:
+            if action[agent_tag] == 3:
                 pos.x -= 1
-            if action[i] == 4:
+            if action[agent_tag] == 4:
                 pos.y -= 1
             
-            assert (0 <= pos.x < self.width and 0 <= pos.y < self.height), f"Agent {agent} tried to move out of bounds."
+            assert (0 <= pos.x < self.width and 0 <= pos.y < self.height), f"Agent {agent_tag} tried to move out of bounds."
 
-            rewards[agent] = 0
             for task in self.tasks:
                 if task.completed:
                     continue
 
                 if task.x == pos.x and task.y == pos.y:
                     task.completed = True
-                    rewards[agent] += task.reward
+                    rewards[agent_tag] += task.reward
 
         # Return the state information, the set of valid actions, and the reward vector.
         num_incomplete_tasks = sum(1 for task in self.tasks if not task.completed)
         
-        state = GlobalState(
-            tasks=copy.deepcopy(self.tasks),
-            agent_positions=copy.deepcopy(self.agent_extrinsics),
-        )
+        state = self.state
         action_space = self.valid_actions()
-        reward = rewards
         done = num_incomplete_tasks == 0
 
-        return (state, action_space, reward, done)
+        return (state, action_space, rewards, done)
