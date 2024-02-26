@@ -13,7 +13,7 @@ class SparseGraphNetwork(nn.Module):
         lins = []
 
         for i in range(len(channel_counts)):
-            convs.append(gnn.GATConv((-1, -1) if i == 0 else channel_counts[i - 1], channel_counts[i], heads=1, dropout=0.1, add_self_loops=False))
+            convs.append(gnn.SAGEConv((-1, -1) if i == 0 else channel_counts[i - 1], channel_counts[i]))
             lins.append(gnn.Linear(-1, channel_counts[i]))
 
         self.convs = nn.ModuleList(convs)
