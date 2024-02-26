@@ -44,6 +44,7 @@ class Task:
 
 @dataclass
 class GlobalState:
+    agent_tags: list[str]
     tasks: list[Task]
     agent_positions: dict[str, AgentExtrinsics]
     width: int
@@ -101,6 +102,7 @@ class TaskSimulator:
     @property
     def state(self):
         return GlobalState(
+            agent_tags=self.agents[:],
             tasks=copy.deepcopy(self.tasks),
             agent_positions=copy.deepcopy(self.agent_extrinsics),
             width=self.width,

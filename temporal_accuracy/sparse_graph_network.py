@@ -4,7 +4,7 @@ import torch_geometric.nn as gnn
 # Instead of traversing a graph of nodes, we can use a graph of semantically meaningful
 # entities in the environment while still using an unconstrained motion model.
 class SparseGraphNetwork(nn.Module):
-    def __init__(self, channel_counts):
+    def __init__(self, channel_counts, head_dim):
         super().__init__()
         # these are `lazy`, input_channels=-1 are rederived at first forward() pass
         # and are automatically converted to use the correct message passing functions
@@ -24,12 +24,11 @@ class SparseGraphNetwork(nn.Module):
         # i put the other agent's outputs as one-hot encoded inputs to the
         # network and then use this qvalue_head to calculate the Q-value
         # for each agent given that joint action
-        self.qvalue_head = gnn.Linear(channel_counts[-1], 1)
-        self.action_head = gnn.Linear(channel_counts[-1], 4)
+        self.head = gnn.Linear(channel_counts[-1], head_dim)
 
     def forward(self, x, edge_index):
         for i, (conv, lin) in enumerate(zip(self.convs, self.lins)):
             x = conv(x, edge_index) + lin(x)
             if i != len(self.convs) - 1:
                 x = x.relu()
-        return self.qvalue_head(x), self.action_head(x)
+        return self.head(x)
