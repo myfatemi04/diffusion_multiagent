@@ -44,8 +44,10 @@ def create_global_feature_graph(global_state: E.GlobalState, agent_action_select
   ]).float()
 
   # Construct edge lists that determine connectivity of graph
-  agent_agent_edge_index = []
-  task_agent_edge_index = []
+  # We add a dummy value so that when the tensor is created, it has the correct
+  # number of dims, even if there is actually nothing in the edge_index.
+  agent_agent_edge_index = [[-1, -1]]
+  task_agent_edge_index = [[-1, -1]]
   for agent_i in range(len(agents)):
     for task_i in range(len(global_state.tasks)):
       agent = agents[agent_i]
@@ -68,9 +70,9 @@ def create_global_feature_graph(global_state: E.GlobalState, agent_action_select
       if distance <= agent_agent_connectivity_radius:
         agent_agent_edge_index.append([agent_i, agent_j])
   
-  data['task', 'visible-by', 'agent'].edge_index = torch.tensor(task_agent_edge_index).T
-  data['agent', 'visible-by', 'agent'].edge_index = torch.tensor(agent_agent_edge_index).T
-  data['task', 'visible-by', 'task'].edge_index = torch.tensor([[i, i] for i in range(len(global_state.tasks))]).T
+  data['task', 'visible_by', 'agent'].edge_index = torch.tensor(task_agent_edge_index).T[:, 1:]
+  data['agent', 'visible_by', 'agent'].edge_index = torch.tensor(agent_agent_edge_index).T[:, 1:]
+  data['task', 'visible_by', 'task'].edge_index = torch.tensor([[i, i] for i in range(len(global_state.tasks))]).T
 
   return data
 
@@ -132,9 +134,9 @@ def create_local_feature_graph(
       if distance <= graph_construction_radius:
         agent_agent_edge_index.append([visible_agent_tags.index(agent_a), visible_agent_tags.index(agent_b)])
   
-  data['task', 'visible-by', 'agent'].edge_index = torch.tensor(task_agent_edge_index).T
-  data['agent', 'visible-by', 'agent'].edge_index = torch.tensor(agent_agent_edge_index).T
-  data['task', 'visible-by', 'task'].edge_index = torch.tensor([[i, i] for i in range(len(visible_task_ids))]).T
+  data['task', 'visible_by', 'agent'].edge_index = torch.tensor(task_agent_edge_index).T.long()
+  data['agent', 'visible_by', 'agent'].edge_index = torch.tensor(agent_agent_edge_index).T.long()
+  data['task', 'visible_by', 'task'].edge_index = torch.tensor([[i, i] for i in range(len(visible_task_ids))]).T.long()
 
   return data, visible_agent_tags
 
