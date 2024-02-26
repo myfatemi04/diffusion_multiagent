@@ -185,7 +185,7 @@ def main():
   policy_agent_agent_connectivity_radius = 5
   policy_agent_task_connectivity_radius = 5
 
-  for episode in range(100):
+  for episode in range(10000):
     state, action_availability_per_agent, reward_per_agent, done = environment.reset()
 
     # Create state-action-reward streams for each agent.
@@ -223,16 +223,17 @@ def main():
           reward_per_agent[agent],
         ))
 
-      # plot agent locations
-      plt.clf()
-      agent_x = [state.agent_positions[agent].x for agent in state.agent_positions]
-      agent_y = [state.agent_positions[agent].y for agent in state.agent_positions]
-      plt.scatter(agent_x, agent_y, c='r', label='agents')
-      task_x = [task.x for task in state.tasks]
-      task_y = [task.y for task in state.tasks]
-      plt.scatter(task_x, task_y, c='b', label='tasks')
-      plt.legend()
-      plt.pause(0.15)
+      # plot agent locations every 100 episodes
+      if (episode + 1) % 100 == 0:
+        plt.clf()
+        agent_x = [state.agent_positions[agent].x for agent in state.agent_positions]
+        agent_y = [state.agent_positions[agent].y for agent in state.agent_positions]
+        plt.scatter(agent_x, agent_y, c='r', label='agents')
+        task_x = [task.x for task in state.tasks]
+        task_y = [task.y for task in state.tasks]
+        plt.scatter(task_x, task_y, c='b', label='tasks')
+        plt.legend()
+        plt.pause(0.00001)
 
       if done:
         break
