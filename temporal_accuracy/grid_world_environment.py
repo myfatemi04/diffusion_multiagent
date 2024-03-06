@@ -56,7 +56,7 @@ class TaskSimulator:
         self.tasks = tasks
         self.agents = ['agent:0']
         self.agent_extrinsics = {
-            'agent:0': AgentExtrinsics(x=0, y=0)
+            'agent:0': AgentExtrinsics(x=10, y=10)
         }
         self.grid = grid
 
