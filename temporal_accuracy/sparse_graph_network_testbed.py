@@ -16,7 +16,7 @@ import torch.nn.functional as F
 import torch_geometric.data
 import torch_geometric.nn as gnn
 from matplotlib import pyplot as plt
-from sparse_graph_network import SparseGraphNetwork
+from sparse_graph_network import SparseGraphNetwork, SparseGraphNetworkWithPositionalEncoding
 
 
 def create_global_feature_graph(global_state: E.GlobalState, agent_action_selections: dict[str, int], agent_task_connectiity_radius: float, agent_agent_connectivity_radius: float):
@@ -175,11 +175,6 @@ def main():
       E.Task(x=15, y=15, reward=1),
     ]
   )
-  # policy and q function will be separate for now
-  policy = SparseGraphNetwork([64, 64, 64], head_dim=5)
-  # policy_ref is for PPO.
-  policy_ref = SparseGraphNetwork([64, 64, 64], head_dim=5)
-  qfunction = SparseGraphNetwork([64, 64, 64], head_dim=1)
   
   dummy_global_state = E.GlobalState(
     ['dummy-agent'],
@@ -199,16 +194,14 @@ def main():
     ego_agent_tag='dummy-agent',
     graph_construction_radius=5,
   )[0]
+  
+  # policy and q function will be separate for now
+  policy = SparseGraphNetworkWithPositionalEncoding([64, 64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
+  # policy_ref is for PPO.
+  policy_ref = SparseGraphNetworkWithPositionalEncoding([64, 64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
+  qfunction = SparseGraphNetworkWithPositionalEncoding([64, 64, 64], head_dim=1).make_heterogeneous(dummy_local_features)
 
-  policy = gnn.to_hetero(policy, dummy_local_features.metadata(), aggr='sum')
-  policy_ref = gnn.to_hetero(policy_ref, dummy_local_features.metadata(), aggr='sum')
-  qfunction = gnn.to_hetero(qfunction, dummy_global_features.metadata(), aggr='sum')
-  with torch.no_grad():
-    _ = policy(dummy_local_features.x_dict, dummy_local_features.edge_index_dict)
-    _ = policy_ref(dummy_local_features.x_dict, dummy_local_features.edge_index_dict)
-    _ = qfunction(dummy_global_features.x_dict, dummy_global_features.edge_index_dict)
-
-  optimizer = torch.optim.Adam(policy.parameters(), lr=lr)
+  optimizer = torch.optim.Adam([*policy.parameters(), *qfunction.parameters()], lr=lr)
 
   # Graph construction parameters
   qfunction_agent_task_connectivity_radius = 20
@@ -218,9 +211,17 @@ def main():
 
   # run_optimization_step_every = 10
 
+  # Make an epsilon value that decays exponentially from 0.5 to 0.005 over the first 10000 episodes, then goes to 0.
+  start_epsilon = 0.5
+  end_epsilon = 0.005
+  epsilon_decay = 10000
+  epsilon_ = lambda episode: end_epsilon + (start_epsilon - end_epsilon) * np.exp(-episode / epsilon_decay)
+
   try:
     for episode in range(n_episodes):
       state, action_availability_per_agent, reward_per_agent, done = environment.reset()
+
+      epsilon = epsilon_(episode) if episode < epsilon_decay else 0
 
       # Create state-action-reward streams for each agent.
       SARS_tuples_per_agent = {agent: [] for agent in environment.agents}
@@ -242,12 +243,16 @@ def main():
             my_agent_index = agent_order.index(agent)
             # this is generated a few lines above
             action_availability = action_availability_per_agent[agent]
-            action_probability_vector = F.softmax(action_logit_vector[my_agent_index, action_availability], dim=-1)
-            num_actions = len(action_availability)
-            # give each action at least 1/(2 * num_actions) probability of being selected
-            action_probability_vector = (action_probability_vector * (1 - 1/(2 * num_actions))) + (1/(2 * num_actions))
 
-            selection_index = torch.multinomial(action_probability_vector, 1, False)
+            if torch.rand(()).item() < epsilon:
+              selection_index = torch.randint(len(action_availability), (1,))
+            else:
+              action_probability_vector = F.softmax(action_logit_vector[my_agent_index, action_availability], dim=-1)
+              # # give each action at least 1/(2 * num_actions) probability of being selected
+              # num_actions = len(action_availability)
+              # action_probability_vector = (action_probability_vector * (1 - 1/(2 * num_actions))) + (1/(2 * num_actions))
+              selection_index = torch.multinomial(action_probability_vector, 1, False)
+
             action_selection_per_agent[agent] = action_availability[selection_index]
             local_graphs_per_agent[agent] = local_features
 
@@ -286,7 +291,6 @@ def main():
         ])
         for SARS_tuples in SARS_tuples_per_agent.values()
       ])
-      wandb.log({'total_reward': total_reward})
 
       # Backpropagation
       total_policy_loss = 0
@@ -340,6 +344,7 @@ def main():
           ratios = action_logprobs - action_logprobs_ref
           clipped_ratios = torch.clamp(ratios, -0.2, 0.2)
           advantage = discounted_rewards - action_values
+          # loss could be really really positive if, for example, ratios * advantage were really high.
           actor_loss = -torch.min(ratios * advantage.detach(), clipped_ratios * advantage.detach()).mean()
           critic_loss = F.mse_loss(action_values, discounted_rewards)
           agent_loss = critic_loss + actor_loss
@@ -350,8 +355,10 @@ def main():
 
         # Take optimization step after all agents have had gradient updates allowed
         optimizer.step()
-        
+
       wandb.log({
+        'epsilon': epsilon,
+        'total_reward': total_reward,
         'total_loss': (total_policy_loss + total_qfunction_loss) / (len(environment.agents) * num_ppo_iterations),
         'policy_loss': total_policy_loss / (len(environment.agents) * num_ppo_iterations),
         'qfunction_loss': total_qfunction_loss / (len(environment.agents) * num_ppo_iterations),

@@ -1,5 +1,9 @@
+import torch
 import torch.nn as nn
 import torch_geometric.nn as gnn
+import torch_geometric.data
+
+from positional_embeddings import PositionalEncoding
 
 # Instead of traversing a graph of nodes, we can use a graph of semantically meaningful
 # entities in the environment while still using an unconstrained motion model.
@@ -32,3 +36,30 @@ class SparseGraphNetwork(nn.Module):
             if i != len(self.convs) - 1:
                 x = x.relu()
         return self.head(x)
+
+class SparseGraphNetworkWithPositionalEncoding(nn.Module):
+    """
+    For now, agents and tasks are solely defined by their coordinates.
+    """
+    def __init__(self, channel_counts, head_dim, n_encoding_dims=64, positional_encoding_max_value=100):
+        self.positional_encoding = PositionalEncoding(
+            n_position_dims=2,
+            n_encoding_dims=n_encoding_dims,
+            max_len=positional_encoding_max_value
+        )
+        self.net = SparseGraphNetwork(channel_counts, head_dim)
+
+    def make_heterogeneous(self, dummy_features: torch_geometric.data.HeteroData):
+        gnn.to_hetero(self.net, dummy_features.metadata(), aggr='sum')
+        # Populate lazy-loaded channels
+        with torch.no_grad():
+            _ = self.net(dummy_features.x_dict, dummy_features.edge_index_dict)
+        # Return self to allow this to be called in the same line as it is instantiated in
+        return self
+
+    def forward(self, x, edge_index):
+        x = {
+            node_type_name: self.positional_encoding(x[node_type_name])
+            for node_type_name in x.keys()
+        }
+        return self.net(x, edge_index)
