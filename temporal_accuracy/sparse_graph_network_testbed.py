@@ -230,32 +230,38 @@ def main():
         # Simultaneously generate an action for all agents
         action_selection_per_agent = {}
         local_graphs_per_agent = {}
-        for agent in environment.agents:
-          # This feature map represents this specific agent's field of view
-          local_features, agent_order = create_local_feature_graph(state, policy_agent_task_connectivity_radius, agent, policy_agent_agent_connectivity_radius)
-          out = policy(local_features.x_dict, local_features.edge_index_dict)
-          action_logit_vector = out['agent']
 
-          my_agent_index = agent_order.index(agent)
-          # this is generated a few lines above
-          action_availability = action_availability_per_agent[agent]
-          action_probability_vector = F.softmax(action_logit_vector[my_agent_index, action_availability], dim=-1)
+        # Policy rollout. No grad.
+        with torch.no_grad():
+          for agent in environment.agents:
+            # This feature map represents this specific agent's field of view
+            local_features, agent_order = create_local_feature_graph(state, policy_agent_task_connectivity_radius, agent, policy_agent_agent_connectivity_radius)
+            out = policy(local_features.x_dict, local_features.edge_index_dict)
+            action_logit_vector = out['agent']
 
-          selection_index = torch.multinomial(action_probability_vector, 1, False)
-          action_selection_per_agent[agent] = action_availability[selection_index]
-          local_graphs_per_agent[agent] = local_features
+            my_agent_index = agent_order.index(agent)
+            # this is generated a few lines above
+            action_availability = action_availability_per_agent[agent]
+            action_probability_vector = F.softmax(action_logit_vector[my_agent_index, action_availability], dim=-1)
+            num_actions = len(action_availability)
+            # give each action at least 1/(2 * num_actions) probability of being selected
+            action_probability_vector = (action_probability_vector * (1 - 1/(2 * num_actions))) + (1/(2 * num_actions))
 
-        # Simultaneously take action step
-        global_graph = create_global_feature_graph(state, action_selection_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
-        state, action_availability_per_agent, reward_per_agent, done = environment.step(action_selection_per_agent)
+            selection_index = torch.multinomial(action_probability_vector, 1, False)
+            action_selection_per_agent[agent] = action_availability[selection_index]
+            local_graphs_per_agent[agent] = local_features
 
-        for agent in environment.agents:
-          SARS_tuples_per_agent[agent].append((
-            local_graphs_per_agent[agent],
-            global_graph,
-            action_selection_per_agent[agent],
-            reward_per_agent[agent],
-          ))
+          # Simultaneously take action step
+          global_graph = create_global_feature_graph(state, action_selection_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
+          state, action_availability_per_agent, reward_per_agent, done = environment.step(action_selection_per_agent)
+
+          for agent in environment.agents:
+            SARS_tuples_per_agent[agent].append((
+              local_graphs_per_agent[agent],
+              global_graph,
+              action_selection_per_agent[agent],
+              reward_per_agent[agent],
+            ))
 
         # plot agent locations every 100 episodes
         # if (episode + 1) % 100 == 0:
@@ -330,9 +336,9 @@ def main():
           action_logprobs_ref = torch.stack(action_logprobs_ref).detach()
           action_values = torch.stack(action_values)
 
-          # Actor-Critic loss
-          ratios = torch.exp(action_logprobs - action_logprobs_ref)
-          clipped_ratios = torch.clamp(ratios, 1 - 0.2, 1 + 0.2)
+          # PPO loss
+          ratios = action_logprobs - action_logprobs_ref
+          clipped_ratios = torch.clamp(ratios, -0.2, 0.2)
           advantage = discounted_rewards - action_values
           actor_loss = -torch.min(ratios * advantage.detach(), clipped_ratios * advantage.detach()).mean()
           critic_loss = F.mse_loss(action_values, discounted_rewards)
