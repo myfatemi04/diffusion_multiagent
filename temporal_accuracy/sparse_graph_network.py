@@ -37,12 +37,14 @@ class SparseGraphNetwork(nn.Module):
                 x = x.relu()
         return self.head(x)
 
-class SparseGraphNetworkWithPositionalEncoding(nn.Module):
+class SparseGraphNetworkWithPositionalEmbedding(nn.Module):
     """
     For now, agents and tasks are solely defined by their coordinates.
     """
     def __init__(self, channel_counts, head_dim, n_encoding_dims=64, positional_encoding_max_value=100):
-        self.positional_encoding = PositionalEncoding(
+        super().__init__()
+
+        self.positional_embedding = PositionalEncoding(
             n_position_dims=2,
             n_encoding_dims=n_encoding_dims,
             max_len=positional_encoding_max_value
@@ -50,16 +52,17 @@ class SparseGraphNetworkWithPositionalEncoding(nn.Module):
         self.net = SparseGraphNetwork(channel_counts, head_dim)
 
     def make_heterogeneous(self, dummy_features: torch_geometric.data.HeteroData):
-        gnn.to_hetero(self.net, dummy_features.metadata(), aggr='sum')
+        self.net = gnn.to_hetero(self.net, dummy_features.metadata(), aggr='sum')
         # Populate lazy-loaded channels
         with torch.no_grad():
-            _ = self.net(dummy_features.x_dict, dummy_features.edge_index_dict)
+            # Call `self` directly, so that features are correctly-sized.
+            _ = self(dummy_features.x_dict, dummy_features.edge_index_dict)
         # Return self to allow this to be called in the same line as it is instantiated in
         return self
 
     def forward(self, x, edge_index):
         x = {
-            node_type_name: self.positional_encoding(x[node_type_name])
+            node_type_name: self.positional_embedding(x[node_type_name])
             for node_type_name in x.keys()
         }
         return self.net(x, edge_index)

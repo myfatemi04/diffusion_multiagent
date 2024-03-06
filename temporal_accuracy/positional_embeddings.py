@@ -26,6 +26,9 @@ class PositionalEncoding(nn.Module):
     
     # multiply by the positional value
     angles = frequencies * position.unsqueeze(-1)
-    sinusoidal_embeddings = torch.cat([angles.sin(), angles.cos()], dim=-1)
+    # [batch_size, n_position_dims, n_encoding_dims]
+    sinusoidal_embeddings_by_position = torch.cat([angles.sin(), angles.cos()], dim=-1)
+    # concatenate sinusoidal embeddings for each individual dimension, then make a projection
+    sinusoidal_embeddings = sinusoidal_embeddings_by_position.view(-1, self.n_position_dims * self.n_encoding_dims)
 
     return self.projection(sinusoidal_embeddings)

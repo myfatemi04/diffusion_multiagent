@@ -16,7 +16,7 @@ import torch.nn.functional as F
 import torch_geometric.data
 import torch_geometric.nn as gnn
 from matplotlib import pyplot as plt
-from sparse_graph_network import SparseGraphNetwork, SparseGraphNetworkWithPositionalEncoding
+from sparse_graph_network import SparseGraphNetwork, SparseGraphNetworkWithPositionalEmbedding
 
 
 def create_global_feature_graph(global_state: E.GlobalState, agent_action_selections: dict[str, int], agent_task_connectiity_radius: float, agent_agent_connectivity_radius: float):
@@ -31,10 +31,10 @@ def create_global_feature_graph(global_state: E.GlobalState, agent_action_select
     [
       global_state.agent_positions[agent].x,
       global_state.agent_positions[agent].y,
-      *[
-        1 if agent_action_selections[agent] == i else 0
-        for i in range(4)
-      ]
+      # *[
+      #   1 if agent_action_selections[agent] == i else 0
+      #   for i in range(4)
+      # ]
     ]
     for agent in agents
   ]).float()
@@ -196,12 +196,12 @@ def main():
   )[0]
   
   # policy and q function will be separate for now
-  policy = SparseGraphNetworkWithPositionalEncoding([64, 64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
+  policy = SparseGraphNetworkWithPositionalEmbedding([64, 64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
   # policy_ref is for PPO.
-  policy_ref = SparseGraphNetworkWithPositionalEncoding([64, 64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
-  qfunction = SparseGraphNetworkWithPositionalEncoding([64, 64, 64], head_dim=1).make_heterogeneous(dummy_local_features)
+  policy_ref = SparseGraphNetworkWithPositionalEmbedding([64, 64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
+  valuefunction = SparseGraphNetworkWithPositionalEmbedding([64, 64, 64], head_dim=1).make_heterogeneous(dummy_global_features)
 
-  optimizer = torch.optim.Adam([*policy.parameters(), *qfunction.parameters()], lr=lr)
+  optimizer = torch.optim.Adam([*policy.parameters(), *valuefunction.parameters()], lr=lr)
 
   # Graph construction parameters
   qfunction_agent_task_connectivity_radius = 20
@@ -331,7 +331,7 @@ def main():
             action_logprob_vector = torch.log_softmax(action_logit_vector, dim=-1)
             action_logprob_vector_ref = torch.log_softmax(action_logit_vector_ref, dim=-1)
 
-            action_values_for_all_agents = qfunction(global_graph.x_dict, global_graph.edge_index_dict)['agent'].squeeze(-1)
+            action_values_for_all_agents = valuefunction(global_graph.x_dict, global_graph.edge_index_dict)['agent'].squeeze(-1)
             action_values.append(action_values_for_all_agents[agent_i])
             action_logprobs.append(action_logprob_vector[action_selection])
             action_logprobs_ref.append(action_logprob_vector_ref[action_selection])
@@ -365,8 +365,12 @@ def main():
       })
   except Exception as e:
     print(e)
+
+    import traceback
+    traceback.print_exc()
+
     torch.save(policy.state_dict(), "policy.pt")
-    torch.save(qfunction.state_dict(), "qfunction.pt")
+    torch.save(valuefunction.state_dict(), "qfunction.pt")
 
 if __name__ == "__main__":
   main()
