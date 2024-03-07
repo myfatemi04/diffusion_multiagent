@@ -166,7 +166,8 @@ def main():
   start_epsilon = 0.5
   end_epsilon = 0.005
   epsilon_decay = 500
-  entropy_weight = 1e-4
+
+  entropy_weight = 1e-3
 
   # wandb.init(mode="disabled")
   wandb.init(
@@ -273,7 +274,7 @@ def main():
           with torch.no_grad():
             for agent in environment.agents:
               # This feature map represents this specific agent's field of view
-              local_features, agent_order = create_local_feature_graph(state, policy_agent_task_connectivity_radius, agent, policy_agent_agent_connectivity_radius)
+              local_features, agent_order = create_local_feature_graph(obs.state, policy_agent_task_connectivity_radius, agent, policy_agent_agent_connectivity_radius)
               out = policy(local_features.x_dict, local_features.edge_index_dict)
               action_logit_vector = out['agent']
 
@@ -283,17 +284,16 @@ def main():
               # this is generated a few lines above
               action_space = obs.action_space[agent]
 
-              # if torch.rand(()).item() < epsilon:
-              #   selection_index = torch.randint(len(action_availability), (1,))
-              #   action_probability_vector = torch.ones(len(action_availability)) / len(action_availability)
-              # else:
-              if is_artificial_episode and train_step < epsilon_decay:
-                # Use gold demonstrations 50% of the time
-                action_logit_vector_dummy = torch.zeros_like(action_logit_vector[0])
-                action_logit_vector_dummy[[0, 1, 2]] = -100
-                action_logit_vector_dummy[[3, 4]] = 0
-                action_probability_vector = F.softmax(action_logit_vector_dummy[action_space], dim=-1)
-                selection_index = torch.multinomial(action_probability_vector, 1, False)
+              if torch.rand(()).item() < epsilon:
+                selection_index = torch.randint(len(action_space), (1,))
+                action_probability_vector = torch.ones(len(action_space)) / len(action_space)
+              # if is_artificial_episode and train_step < epsilon_decay:
+              #   # Use gold demonstrations 50% of the time
+              #   action_logit_vector_dummy = torch.zeros_like(action_logit_vector[0])
+              #   action_logit_vector_dummy[[0, 1, 2]] = -100
+              #   action_logit_vector_dummy[[3, 4]] = 0
+              #   action_probability_vector = F.softmax(action_logit_vector_dummy[action_space], dim=-1)
+              #   selection_index = torch.multinomial(action_probability_vector, 1, False)
               else:
                 action_probability_vector = F.softmax(action_logit_vector[my_agent_index, action_space], dim=-1)
                 # # give each action at least 1/(2 * num_actions) probability of being selected
@@ -310,7 +310,7 @@ def main():
               action_probs_per_agent[agent][action_space] = action_probability_vector
 
             # Simultaneously take action step
-            global_graph = create_global_feature_graph(state, action_selection_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
+            global_graph = create_global_feature_graph(obs.state, action_selection_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
             # next_global_graph = create_global_feature_graph(next_state, next_action_availability_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
             next_obs = environment.step(action_selection_per_agent)
             steps.append(MultiAgentSARSTuple(
@@ -343,6 +343,7 @@ def main():
         sum(sum(tup.reward.values()) for tup in episode.steps)
         for episode in episodes
       ) / len(episodes)
+      mean_episode_length = sum(len(episode.steps) for episode in episodes) / len(episodes)
 
       # Backpropagation
       total_policy_loss = 0
@@ -358,11 +359,10 @@ def main():
           print("probs:", step.action_probs)
           print("selection:", step.action_selection)
           plt.title("Step: " + str(train_step))
-          state = step.global_state
           visualizer.render_scene(
             {
               agent: {
-                "xy": (state.agent_positions[agent].x, state.agent_positions[agent].y),
+                "xy": (step.global_state.agent_positions[agent].x, step.global_state.agent_positions[agent].y),
                 "color": "red",
                 "action_probs": step.action_probs[agent].tolist(),
                 # "action_values": action_values_per_agent[agent].tolist(),
@@ -374,7 +374,7 @@ def main():
                 "xy": (task.x, task.y),
                 "color": "blue"
               }
-              for i, task in enumerate(state.tasks)
+              for i, task in enumerate(step.global_state.tasks)
             },
           )
 
@@ -479,6 +479,7 @@ def main():
       wandb.log({
         'epsilon': epsilon,
         'total_reward': mean_episode_reward,
+        'episode_length': mean_episode_length,
         'loss': (total_policy_loss + total_qfunction_loss) / (len(environment.agents) * n_ppo_iterations * n_batch_episodes),
         'policy_loss': total_policy_loss / (len(environment.agents) * n_ppo_iterations * n_batch_episodes),
         'qfunction_loss': total_qfunction_loss / (len(environment.agents) * n_ppo_iterations * n_batch_episodes),
