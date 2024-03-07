@@ -22,7 +22,8 @@ import visualizer
 from marl import MultiAgentEpisode, MultiAgentSARSTuple
 from matplotlib import pyplot as plt
 from sparse_graph_network import (SparseGraphNetwork,
-                                  SparseGraphNetworkWithPositionalEmbedding)
+                                  SparseGraphNetworkWithPositionalEmbedding,
+                                  SparseGraphQNetworkWithPositionalEmbedding)
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -38,10 +39,14 @@ def create_global_feature_graph(global_state: E.GlobalState, agent_action_select
     [
       global_state.agent_positions[agent].x,
       global_state.agent_positions[agent].y,
-      # *[
-      #   1 if agent_action_selections[agent] == i else 0
-      #   for i in range(4)
-      # ]
+    ]
+    for agent in agents
+  ]).float()
+  # create one-hot action embedding
+  data['agent'].action = torch.tensor([
+    [
+      1 if agent_action_selections[agent] == i else 0
+      for i in range(5)
     ]
     for agent in agents
   ]).float()
@@ -324,9 +329,10 @@ def main():
   policy = SparseGraphNetworkWithPositionalEmbedding([64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
   # policy_ref is for PPO.
   policy_ref = SparseGraphNetworkWithPositionalEmbedding([64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
-  valuefunction = SparseGraphNetworkWithPositionalEmbedding([64, 64], head_dim=1).make_heterogeneous(dummy_global_features)
+  # SparseGraphQNetwork takes in agent actions as well.
+  qfunction = SparseGraphQNetworkWithPositionalEmbedding([64, 64], head_dim=1).make_heterogeneous(dummy_global_features)
 
-  optimizer = torch.optim.Adam([*policy.parameters(), *valuefunction.parameters()], lr=lr)
+  optimizer = torch.optim.Adam([*policy.parameters(), *qfunction.parameters()], lr=lr)
 
   # Graph construction parameters
   qfunction_agent_task_connectivity_radius = 20
@@ -436,7 +442,7 @@ def main():
                 out_ref = policy_ref(local_graph.x_dict, local_graph.edge_index_dict)
                 logits_ref = out_ref['agent'][my_index_in_local_subgraph][action_space]
 
-              out = valuefunction(global_graph.x_dict, global_graph.edge_index_dict)
+              out = qfunction(global_graph.x_dict, global_graph['agent'].actions, global_graph.edge_index_dict)
               value = out['agent'].squeeze(-1)[agent_i]
 
               # Store logprobs for executed policy
@@ -514,7 +520,7 @@ def main():
     traceback.print_exc()
 
     torch.save(policy.state_dict(), "policy.pt")
-    torch.save(valuefunction.state_dict(), "qfunction.pt")
+    torch.save(qfunction.state_dict(), "qfunction.pt")
 
 if __name__ == "__main__":
   main()

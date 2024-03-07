@@ -66,3 +66,37 @@ class SparseGraphNetworkWithPositionalEmbedding(nn.Module):
             for node_type_name in x.keys()
         }
         return self.net(x, edge_index)
+
+# Q network includes the ability to add `action` inputs
+# Will just implement these by "reducing" to a single vector space input
+class SparseGraphQNetworkWithPositionalEmbedding(nn.Module):
+    """
+    For now, agents and tasks are solely defined by their coordinates.
+    """
+    def __init__(self, channel_counts, head_dim, n_encoding_dims=64, positional_encoding_max_value=100):
+        super().__init__()
+
+        self.positional_embedding = PositionalEncoding(
+            n_position_dims=2,
+            n_encoding_dims=n_encoding_dims,
+            max_len=positional_encoding_max_value
+        )
+        self.net = SparseGraphNetwork(channel_counts, head_dim)
+
+    def make_heterogeneous(self, dummy_features: torch_geometric.data.HeteroData):
+        self.net = gnn.to_hetero(self.net, dummy_features.metadata(), aggr='sum')
+        # Populate lazy-loaded channels
+        with torch.no_grad():
+            # Call `self` directly, so that features are correctly-sized.
+            _ = self(dummy_features.x_dict, dummy_features['agent'].action, dummy_features.edge_index_dict)
+        # Return self to allow this to be called in the same line as it is instantiated in
+        return self
+
+    def forward(self, x, actions, edge_index):
+        x = {
+            node_type_name: self.positional_embedding(x[node_type_name])
+            for node_type_name in x.keys()
+        }
+        x['agent'] = torch.cat([x['agent'], actions], dim=-1)
+        return self.net(x, edge_index)
+
