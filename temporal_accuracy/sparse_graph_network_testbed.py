@@ -200,7 +200,7 @@ def main():
       # E.Task(x=5, y=5, reward=1),
       # E.Task(x=15, y=15, reward=1),
     ],
-    agents=['agent:0'],
+    agents=['agent:0'], # , 'agent:1'],
     agent_extrinsics={
       'agent:0': E.AgentExtrinsics(x=5, y=5)
     }
