@@ -9,23 +9,21 @@ Approach:
 """
 
 import copy
-from dataclasses import dataclass
-import time
+import random
+import sys
 
 import grid_world_environment as E
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch_geometric.data
 import torch_geometric.nn as gnn
 import visualizer
+import wandb
 from marl import MultiAgentEpisode, MultiAgentSARSTuple
 from matplotlib import pyplot as plt
 from sparse_graph_network import (SparseGraphNetwork,
-                                  SparseGraphNetworkWithPositionalEmbedding,
-                                  SparseGraphQNetworkWithPositionalEmbedding)
-from concurrent.futures import ThreadPoolExecutor
+                                  SparseGraphNetworkWithPositionalEmbedding)
 
 
 def create_global_feature_graph(global_state: E.GlobalState, agent_action_selections: dict[str, int], agent_task_connectiity_radius: float, agent_agent_connectivity_radius: float):
@@ -166,7 +164,7 @@ def collect_episode(
 
   steps: list[MultiAgentSARSTuple] = []
 
-  is_artificial_episode = False # torch.rand(()).item() < 0.1
+  is_artificial_episode = torch.rand(()).item() < 0.1
 
   # run for a max of 20 steps per episode
   for episode_step in range(40):
@@ -191,16 +189,24 @@ def collect_episode(
         # this is generated a few lines above
         action_space = obs.action_space[agent]
 
-        if torch.rand(()).item() < epsilon:
-          selection_index = torch.randint(len(action_space), (1,))
-          action_probability_vector = torch.ones(len(action_space)) / len(action_space)
-        # if is_artificial_episode and train_step < epsilon_decay:
-        #   # Use gold demonstrations 50% of the time
-        #   action_logit_vector_dummy = torch.zeros_like(action_logit_vector[0])
-        #   action_logit_vector_dummy[[0, 1, 2]] = -100
-        #   action_logit_vector_dummy[[3, 4]] = 0
-        #   action_probability_vector = F.softmax(action_logit_vector_dummy[action_space], dim=-1)
-        #   selection_index = torch.multinomial(action_probability_vector, 1, False)
+        # if torch.rand(()).item() < epsilon:
+        #   selection_index = torch.randint(len(action_space), (1,))
+        #   action_probability_vector = torch.ones(len(action_space)) / len(action_space)
+        if is_artificial_episode:
+          # Use gold demonstrations 50% of the time
+          if agent == 'agent:1':
+            action_logit_vector_dummy = torch.zeros_like(action_logit_vector[0])
+            action_logit_vector_dummy[[0, 1, 3, 4]] = -100
+            action_logit_vector_dummy[[2]] = 0
+            action_probability_vector = F.softmax(action_logit_vector_dummy[action_space], dim=-1)
+            selection_index = torch.multinomial(action_probability_vector, 1, False)
+          elif agent == 'agent:0':
+            action_logit_vector_dummy = torch.zeros_like(action_logit_vector[0])
+            action_logit_vector_dummy[[0, 1, 2, 3]] = -100
+            action_logit_vector_dummy[[4]] = 0
+            action_probability_vector = F.softmax(action_logit_vector_dummy[action_space], dim=-1)
+            selection_index = torch.multinomial(action_probability_vector, 1, False)
+          # print(agent, action_space, action_space[selection_index])
         else:
           action_probability_vector = F.softmax(action_logit_vector[my_agent_index, action_space], dim=-1)
           # # give each action at least 1/(2 * num_actions) probability of being selected
@@ -232,7 +238,7 @@ def collect_episode(
         action_probs_per_agent,
         obs.reward,
         next_obs.done,
-        obs.total_completed_tasks,
+        next_obs.total_completed_tasks,
       ))
 
       obs = next_obs
@@ -240,14 +246,15 @@ def collect_episode(
       if next_obs.done:
         break
 
+  # if is_artificial_episode:
+  #   print("Artificial episode reward:", sum(sum(tup.reward.values()) for tup in steps))
+  #   print("Artificial episode num. reached goals:", steps[-1].num_completed_tasks)
+  #   print(environment.tasks, environment.agents, environment.agent_extrinsics)
+
   return MultiAgentEpisode(environment.agents, steps)
 
 
 def main():
-  import random
-
-  import wandb
-
   torch.random.manual_seed(0)
   np.random.seed(0)
   random.seed(0)
@@ -272,32 +279,35 @@ def main():
 
   layer_sizes = [64, 64, 64]
 
-  # wandb.init(mode="disabled")
-  wandb.init(
-    # set the wandb project where this run will be logged
-    project="arl-collab-planning",
-    # track hyperparameters and run metadata
-    config={
-      "lr_schedule": "constant",
-      "environment": "randomized",
-      # "initial_lr": initial_lr,
-      # "end_lr": end_lr,
-      "lr": lr,
-      "architecture": alg,
-      "n_episodes": n_batches,
-      "n_scenarios": n_scenarios,
-      "n_agents": n_agents,
-      "n_tasks": n_tasks,
-      "n_ppo_iterations": n_ppo_iterations,
-      "n_batch_episodes": n_batch_episodes,
-      "start_epsilon": start_epsilon,
-      "end_epsilon": end_epsilon,
-      "epsilon_decay": epsilon_decay,
-      "entropy_weight": entropy_weight,
-      "layer_sizes": layer_sizes,
-      "conv_layer": "GATConv",
-    }
-  )
+  use_wandb = '--debug' not in sys.argv
+  if not use_wandb:
+    wandb.init(mode="disabled")
+  else:
+    wandb.init(
+      # set the wandb project where this run will be logged
+      project="arl-collab-planning",
+      # track hyperparameters and run metadata
+      config={
+        "lr_schedule": "constant",
+        "environment": "randomized",
+        # "initial_lr": initial_lr,
+        # "end_lr": end_lr,
+        "lr": lr,
+        "architecture": alg,
+        "n_episodes": n_batches,
+        "n_scenarios": n_scenarios,
+        "n_agents": n_agents,
+        "n_tasks": n_tasks,
+        "n_ppo_iterations": n_ppo_iterations,
+        "n_batch_episodes": n_batch_episodes,
+        "start_epsilon": start_epsilon,
+        "end_epsilon": end_epsilon,
+        "epsilon_decay": epsilon_decay,
+        "entropy_weight": entropy_weight,
+        "layer_sizes": layer_sizes,
+        "conv_layer": "SAGEConv",
+      }
+    )
 
   environment = E.TaskSimulator(
     grid=np.zeros((20, 20)),
@@ -310,7 +320,7 @@ def main():
       'agent:0': E.AgentExtrinsics(x=5, y=12),
       'agent:1': E.AgentExtrinsics(x=15, y=8)
     },
-    randomize=True
+    randomize=False
   )
   
   dummy_global_state = E.GlobalState(
@@ -332,12 +342,14 @@ def main():
     graph_construction_radius=5,
   )[0]
   
+  # GATConv = partial(gnn.GATConv, add_self_loops=False)
+
   # policy and q function will be separate for now
-  policy = SparseGraphNetworkWithPositionalEmbedding(layer_sizes, head_dim=5, conv_layer=gnn.GATConv).make_heterogeneous(dummy_local_features)
+  policy = SparseGraphNetworkWithPositionalEmbedding(layer_sizes, head_dim=5, conv_layer=gnn.SAGEConv).make_heterogeneous(dummy_local_features)
   # policy_ref is for PPO.
-  policy_ref = SparseGraphNetworkWithPositionalEmbedding(layer_sizes, head_dim=5, conv_layer=gnn.GATConv).make_heterogeneous(dummy_local_features)
+  policy_ref = SparseGraphNetworkWithPositionalEmbedding(layer_sizes, head_dim=5, conv_layer=gnn.SAGEConv).make_heterogeneous(dummy_local_features)
   # SparseGraphQNetwork takes in agent actions as well.
-  valuefunction = SparseGraphNetworkWithPositionalEmbedding(layer_sizes, head_dim=1, conv_layer=gnn.GATConv).make_heterogeneous(dummy_global_features)
+  valuefunction = SparseGraphNetworkWithPositionalEmbedding(layer_sizes, head_dim=1, conv_layer=gnn.SAGEConv).make_heterogeneous(dummy_global_features)
 
   optimizer = torch.optim.Adam([*policy.parameters(), *valuefunction.parameters()], lr=lr)
 

@@ -82,8 +82,6 @@ class TaskSimulator:
                 ext.x, ext.y = grid_locations[locations[i + len(self._original_tasks)]]
         else:
             self.tasks = copy.deepcopy(self._original_tasks)
-            # self.agent_extrinsics['agent:0'].x = np.random.randint(0, self.width)
-            # self.agent_extrinsics['agent:0'].y = np.random.randint(0, self.height)
             self.agent_extrinsics = copy.deepcopy(self._original_agent_extrinsics)
 
         # Return the state information, the set of valid actions, and the reward vector.
