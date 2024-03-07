@@ -10,6 +10,7 @@ Approach:
 
 import copy
 from dataclasses import dataclass
+import time
 
 import grid_world_environment as E
 import numpy as np
@@ -269,29 +270,30 @@ def main():
 
   entropy_weight = 1e-3
 
-  # wandb.init(mode="disabled")
-  wandb.init(
-    # set the wandb project where this run will be logged
-    project="arl-collab-planning",
-    # track hyperparameters and run metadata
-    config={
-      "lr_schedule": "constant",
-      # "initial_lr": initial_lr,
-      # "end_lr": end_lr,
-      "lr": lr,
-      "architecture": alg,
-      "n_episodes": n_batches,
-      "n_scenarios": n_scenarios,
-      "n_agents": n_agents,
-      "n_tasks": n_tasks,
-      "n_ppo_iterations": n_ppo_iterations,
-      "n_batch_episodes": n_batch_episodes,
-      "start_epsilon": start_epsilon,
-      "end_epsilon": end_epsilon,
-      "epsilon_decay": epsilon_decay,
-      "entropy_weight": entropy_weight,
-    }
-  )
+  wandb.init(mode="disabled")
+  # wandb.init(
+  #   # set the wandb project where this run will be logged
+  #   project="arl-collab-planning",
+  #   # track hyperparameters and run metadata
+  #   config={
+  #     "lr_schedule": "constant",
+  #     "environment": "randomized",
+  #     # "initial_lr": initial_lr,
+  #     # "end_lr": end_lr,
+  #     "lr": lr,
+  #     "architecture": alg,
+  #     "n_episodes": n_batches,
+  #     "n_scenarios": n_scenarios,
+  #     "n_agents": n_agents,
+  #     "n_tasks": n_tasks,
+  #     "n_ppo_iterations": n_ppo_iterations,
+  #     "n_batch_episodes": n_batch_episodes,
+  #     "start_epsilon": start_epsilon,
+  #     "end_epsilon": end_epsilon,
+  #     "epsilon_decay": epsilon_decay,
+  #     "entropy_weight": entropy_weight,
+  #   }
+  # )
 
   environment = E.TaskSimulator(
     grid=np.zeros((20, 20)),
@@ -303,7 +305,8 @@ def main():
     agent_extrinsics={
       'agent:0': E.AgentExtrinsics(x=5, y=12),
       'agent:1': E.AgentExtrinsics(x=15, y=8)
-    }
+    },
+    randomize=True
   )
   
   dummy_global_state = E.GlobalState(
@@ -330,9 +333,9 @@ def main():
   # policy_ref is for PPO.
   policy_ref = SparseGraphNetworkWithPositionalEmbedding([64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
   # SparseGraphQNetwork takes in agent actions as well.
-  qfunction = SparseGraphQNetworkWithPositionalEmbedding([64, 64], head_dim=1).make_heterogeneous(dummy_global_features)
+  valuefunction = SparseGraphNetworkWithPositionalEmbedding([64, 64], head_dim=1).make_heterogeneous(dummy_global_features)
 
-  optimizer = torch.optim.Adam([*policy.parameters(), *qfunction.parameters()], lr=lr)
+  optimizer = torch.optim.Adam([*policy.parameters(), *valuefunction.parameters()], lr=lr)
 
   # Graph construction parameters
   qfunction_agent_task_connectivity_radius = 20
@@ -356,15 +359,21 @@ def main():
       epsilon = epsilon_(train_step) if train_step < epsilon_decay else 0
 
       # Create state-action-reward streams for each agent.
+      # use_thread_pool = True
+      # tic = time.time()
+      # if use_thread_pool:
+      #   with ThreadPoolExecutor() as executor:
+      #     episodes = list(executor.map(
+      #       lambda env: collect_episode(env, policy, epsilon, policy_agent_task_connectivity_radius, policy_agent_agent_connectivity_radius, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius),
+      #       environments
+      #     ))
+      # else:
       episodes = [
         collect_episode(env, policy, epsilon, policy_agent_task_connectivity_radius, policy_agent_agent_connectivity_radius, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
         for env in environments
       ]
-      # with ThreadPoolExecutor() as executor:
-      #   episodes = list(executor.map(
-      #     lambda env: collect_episode(env, policy, epsilon, policy_agent_task_connectivity_radius, policy_agent_agent_connectivity_radius, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius),
-      #     environments
-      #   ))
+      # toc = time.time()
+      # print("Episode collection time:", (toc - tic) / n_batch_episodes, "seconds")
 
       # Log reward statistics
       mean_episode_reward = sum(
@@ -442,7 +451,7 @@ def main():
                 out_ref = policy_ref(local_graph.x_dict, local_graph.edge_index_dict)
                 logits_ref = out_ref['agent'][my_index_in_local_subgraph][action_space]
 
-              out = qfunction(global_graph.x_dict, global_graph['agent'].actions, global_graph.edge_index_dict)
+              out = valuefunction(global_graph.x_dict, global_graph.edge_index_dict)
               value = out['agent'].squeeze(-1)[agent_i]
 
               # Store logprobs for executed policy
@@ -520,7 +529,7 @@ def main():
     traceback.print_exc()
 
     torch.save(policy.state_dict(), "policy.pt")
-    torch.save(qfunction.state_dict(), "qfunction.pt")
+    torch.save(valuefunction.state_dict(), "qfunction.pt")
 
 if __name__ == "__main__":
   main()

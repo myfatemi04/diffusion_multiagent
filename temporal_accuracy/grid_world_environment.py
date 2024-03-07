@@ -59,19 +59,32 @@ class Observation:
     done: bool = False
 
 class TaskSimulator:
-    def __init__(self, grid: np.ndarray, tasks: list[Task], agents: list[str], agent_extrinsics: dict[str, AgentExtrinsics]):
+    def __init__(self, grid: np.ndarray, tasks: list[Task], agents: list[str], agent_extrinsics: dict[str, AgentExtrinsics], randomize=False):
         self._original_tasks = copy.deepcopy(tasks)
         self._original_agent_extrinsics = copy.deepcopy(agent_extrinsics)
         self.tasks = tasks
         self.agents = agents
         self.agent_extrinsics = agent_extrinsics
         self.grid = grid
+        self.randomize = randomize
 
     def reset(self) -> Observation:
-        self.tasks = copy.deepcopy(self._original_tasks)
-        # self.agent_extrinsics['agent:0'].x = np.random.randint(0, self.width)
-        # self.agent_extrinsics['agent:0'].y = np.random.randint(0, self.height)
-        self.agent_extrinsics = copy.deepcopy(self._original_agent_extrinsics)
+        if self.randomize:
+            # choose a couple unique task and agent locations
+            grid_locations = [(x, y) for x in range(self.width) for y in range(self.height)]
+            locations = np.random.choice(len(grid_locations), len(self._original_tasks) + len(self._original_agent_extrinsics), replace=False)
+
+            for i, task in enumerate(self.tasks):
+                task.completed = False
+                task.x, task.y = grid_locations[locations[i]]
+            for i, agent in enumerate(self.agents):
+                ext = self.agent_extrinsics[agent]
+                ext.x, ext.y = grid_locations[locations[i + len(self._original_tasks)]]
+        else:
+            self.tasks = copy.deepcopy(self._original_tasks)
+            # self.agent_extrinsics['agent:0'].x = np.random.randint(0, self.width)
+            # self.agent_extrinsics['agent:0'].y = np.random.randint(0, self.height)
+            self.agent_extrinsics = copy.deepcopy(self._original_agent_extrinsics)
 
         # Return the state information, the set of valid actions, and the reward vector.
         num_incomplete_tasks = sum(1 for task in self.tasks if not task.completed)
