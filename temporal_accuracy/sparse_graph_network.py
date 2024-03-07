@@ -8,7 +8,7 @@ from positional_embeddings import PositionalEncoding
 # Instead of traversing a graph of nodes, we can use a graph of semantically meaningful
 # entities in the environment while still using an unconstrained motion model.
 class SparseGraphNetwork(nn.Module):
-    def __init__(self, channel_counts, head_dim):
+    def __init__(self, channel_counts, head_dim, conv_layer: type = gnn.SAGEConv):
         super().__init__()
         # these are `lazy`, input_channels=-1 are rederived at first forward() pass
         # and are automatically converted to use the correct message passing functions
@@ -17,7 +17,7 @@ class SparseGraphNetwork(nn.Module):
         lins = []
 
         for i in range(len(channel_counts)):
-            convs.append(gnn.SAGEConv((-1, -1) if i == 0 else channel_counts[i - 1], channel_counts[i]))
+            convs.append(conv_layer((-1, -1) if i == 0 else channel_counts[i - 1], channel_counts[i]))
             lins.append(gnn.Linear(-1, channel_counts[i]))
 
         self.convs = nn.ModuleList(convs)
@@ -41,7 +41,7 @@ class SparseGraphNetworkWithPositionalEmbedding(nn.Module):
     """
     For now, agents and tasks are solely defined by their coordinates.
     """
-    def __init__(self, channel_counts, head_dim, n_encoding_dims=64, positional_encoding_max_value=100):
+    def __init__(self, channel_counts, head_dim, conv_layer, n_encoding_dims=64, positional_encoding_max_value=100):
         super().__init__()
 
         self.positional_embedding = PositionalEncoding(
@@ -49,7 +49,7 @@ class SparseGraphNetworkWithPositionalEmbedding(nn.Module):
             n_encoding_dims=n_encoding_dims,
             max_len=positional_encoding_max_value
         )
-        self.net = SparseGraphNetwork(channel_counts, head_dim)
+        self.net = SparseGraphNetwork(channel_counts, head_dim, conv_layer)
 
     def make_heterogeneous(self, dummy_features: torch_geometric.data.HeteroData):
         self.net = gnn.to_hetero(self.net, dummy_features.metadata(), aggr='sum')

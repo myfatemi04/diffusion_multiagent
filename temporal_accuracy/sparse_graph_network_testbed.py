@@ -169,7 +169,7 @@ def collect_episode(
   is_artificial_episode = False # torch.rand(()).item() < 0.1
 
   # run for a max of 20 steps per episode
-  for episode_step in range(20):
+  for episode_step in range(40):
     # Simultaneously generate an action for all agents
     action_selection_per_agent = {}
     action_probs_per_agent = {}
@@ -270,30 +270,34 @@ def main():
 
   entropy_weight = 1e-3
 
-  wandb.init(mode="disabled")
-  # wandb.init(
-  #   # set the wandb project where this run will be logged
-  #   project="arl-collab-planning",
-  #   # track hyperparameters and run metadata
-  #   config={
-  #     "lr_schedule": "constant",
-  #     "environment": "randomized",
-  #     # "initial_lr": initial_lr,
-  #     # "end_lr": end_lr,
-  #     "lr": lr,
-  #     "architecture": alg,
-  #     "n_episodes": n_batches,
-  #     "n_scenarios": n_scenarios,
-  #     "n_agents": n_agents,
-  #     "n_tasks": n_tasks,
-  #     "n_ppo_iterations": n_ppo_iterations,
-  #     "n_batch_episodes": n_batch_episodes,
-  #     "start_epsilon": start_epsilon,
-  #     "end_epsilon": end_epsilon,
-  #     "epsilon_decay": epsilon_decay,
-  #     "entropy_weight": entropy_weight,
-  #   }
-  # )
+  layer_sizes = [64, 64, 64]
+
+  # wandb.init(mode="disabled")
+  wandb.init(
+    # set the wandb project where this run will be logged
+    project="arl-collab-planning",
+    # track hyperparameters and run metadata
+    config={
+      "lr_schedule": "constant",
+      "environment": "randomized",
+      # "initial_lr": initial_lr,
+      # "end_lr": end_lr,
+      "lr": lr,
+      "architecture": alg,
+      "n_episodes": n_batches,
+      "n_scenarios": n_scenarios,
+      "n_agents": n_agents,
+      "n_tasks": n_tasks,
+      "n_ppo_iterations": n_ppo_iterations,
+      "n_batch_episodes": n_batch_episodes,
+      "start_epsilon": start_epsilon,
+      "end_epsilon": end_epsilon,
+      "epsilon_decay": epsilon_decay,
+      "entropy_weight": entropy_weight,
+      "layer_sizes": layer_sizes,
+      "conv_layer": "GATConv",
+    }
+  )
 
   environment = E.TaskSimulator(
     grid=np.zeros((20, 20)),
@@ -329,11 +333,11 @@ def main():
   )[0]
   
   # policy and q function will be separate for now
-  policy = SparseGraphNetworkWithPositionalEmbedding([64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
+  policy = SparseGraphNetworkWithPositionalEmbedding(layer_sizes, head_dim=5, conv_layer=gnn.GATConv).make_heterogeneous(dummy_local_features)
   # policy_ref is for PPO.
-  policy_ref = SparseGraphNetworkWithPositionalEmbedding([64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
+  policy_ref = SparseGraphNetworkWithPositionalEmbedding(layer_sizes, head_dim=5, conv_layer=gnn.GATConv).make_heterogeneous(dummy_local_features)
   # SparseGraphQNetwork takes in agent actions as well.
-  valuefunction = SparseGraphNetworkWithPositionalEmbedding([64, 64], head_dim=1).make_heterogeneous(dummy_global_features)
+  valuefunction = SparseGraphNetworkWithPositionalEmbedding(layer_sizes, head_dim=1, conv_layer=gnn.GATConv).make_heterogeneous(dummy_global_features)
 
   optimizer = torch.optim.Adam([*policy.parameters(), *valuefunction.parameters()], lr=lr)
 
@@ -381,6 +385,7 @@ def main():
         for episode in episodes
       ) / len(episodes)
       mean_episode_length = sum(len(episode.steps) for episode in episodes) / len(episodes)
+      mean_completed_tasks = sum(episode.steps[-1].num_completed_tasks for episode in episodes) / len(episodes)
 
       # Backpropagation
       total_policy_loss = 0
@@ -521,6 +526,7 @@ def main():
         'loss': (total_policy_loss + total_qfunction_loss) / (len(environment.agents) * n_ppo_iterations * n_batch_episodes),
         'policy_loss': total_policy_loss / (len(environment.agents) * n_ppo_iterations * n_batch_episodes),
         'qfunction_loss': total_qfunction_loss / (len(environment.agents) * n_ppo_iterations * n_batch_episodes),
+        'completed_tasks': mean_completed_tasks,
       })
   except Exception as e:
     print(e)
