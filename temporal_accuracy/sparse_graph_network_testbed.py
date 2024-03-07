@@ -214,8 +214,13 @@ def main():
   # Make an epsilon value that decays exponentially from 0.5 to 0.005 over the first 10000 episodes, then goes to 0.
   start_epsilon = 0.5
   end_epsilon = 0.005
-  epsilon_decay = 10000
-  epsilon_ = lambda episode: end_epsilon + (start_epsilon - end_epsilon) * np.exp(-episode / epsilon_decay)
+  epsilon_decay = 5000
+  # exponential decay from end epsilon to start epsilon over epsilon_decay episodes.
+  # can think of this as a linear interpolation in logarithmic space.
+  epsilon_ = lambda episode: np.exp(
+    np.log(start_epsilon) * (episode / epsilon_decay) + 
+    np.log(end_epsilon) * (1 - episode / epsilon_decay)
+  )
 
   try:
     for episode in range(n_episodes):
