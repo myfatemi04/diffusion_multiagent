@@ -74,6 +74,7 @@ def render_scene(
         for i, prob in enumerate(action_probs):
             if prob > 0:
                 dx, dy = [(0, 0), (1, 0), (0, 1), (-1, 0), (0, -1)][i]
+                print(i, prob, dx, dy)
                 plt.arrow(position[0], position[1], dx * prob, dy * prob, color=color, head_width=0.05, head_length=0.1)
     
     for tag, info in tasks.items():

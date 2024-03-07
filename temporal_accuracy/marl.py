@@ -1,13 +1,19 @@
 from dataclasses import dataclass
+
+import torch
 import torch_geometric.data
+import grid_world_environment as E
 
 @dataclass
 class MultiAgentSARSTuple:
+  global_state: E.GlobalState
   local_graph: dict[str, torch_geometric.data.HeteroData]
   global_graph: torch_geometric.data.HeteroData
   action_selection: dict[str, int]
   action_availability: dict[str, list[int]]
+  action_probs: dict[str, torch.Tensor]
   reward: dict[str, float]
+  done: bool
   discounted_reward: dict[str, float] | None = None
 
 @dataclass

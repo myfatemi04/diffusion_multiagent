@@ -166,7 +166,7 @@ def main():
   start_epsilon = 0.5
   end_epsilon = 0.005
   epsilon_decay = 500
-  entropy_weight = 1e-5
+  entropy_weight = 1e-4
 
   wandb.init(mode="disabled")
   # wandb.init(
@@ -247,9 +247,9 @@ def main():
   )
 
   try:
-    for step_number in range(n_batches):
+    for train_step in range(n_batches):
 
-      epsilon = epsilon_(step_number) if step_number < epsilon_decay else 0
+      epsilon = epsilon_(train_step) if train_step < epsilon_decay else 0
 
       # Create state-action-reward streams for each agent.
       episodes: list[MultiAgentEpisode] = []
@@ -259,14 +259,14 @@ def main():
 
         steps: list[MultiAgentSARSTuple] = []
 
-        is_artificial_episode = torch.rand(()).item() < 0.5
+        is_artificial_episode = False # torch.rand(()).item() < 0.5
 
         # run for a max of 20 steps per episode
-        for step in range(20):
+        for episode_step in range(20):
           # Simultaneously generate an action for all agents
           action_selection_per_agent = {}
           action_probs_per_agent = {}
-          action_values_per_agent = {}
+          # action_values_per_agent = {}
           local_graphs_per_agent = {}
 
           # Policy rollout. No grad.
@@ -284,7 +284,7 @@ def main():
               # if torch.rand(()).item() < epsilon:
               #   selection_index = torch.randint(len(action_availability), (1,))
               # else:
-              if is_artificial_episode and step_number < epsilon_decay:
+              if is_artificial_episode and train_step < epsilon_decay:
                 # Use gold demonstrations 50% of the time
                 action_logit_vector_dummy = torch.zeros_like(action_logit_vector[0])
                 action_logit_vector_dummy[[0, 1, 2]] = -100
@@ -308,17 +308,19 @@ def main():
 
             # Simultaneously take action step
             global_graph = create_global_feature_graph(state, action_selection_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
-            action_availability_per_agent_copy = action_availability_per_agent
-
-            state, action_availability_per_agent, reward_per_agent, done = environment.step(action_selection_per_agent)
 
             steps.append(MultiAgentSARSTuple(
+              state,
               local_graphs_per_agent,
               global_graph,
               action_selection_per_agent,
-              action_availability_per_agent_copy,
+              action_availability_per_agent,
+              action_probs_per_agent,
               reward_per_agent,
+              done,
             ))
+
+            state, action_availability_per_agent, reward_per_agent, done = environment.step(action_selection_per_agent)
 
           if done:
             break
@@ -349,7 +351,35 @@ def main():
 
       policy_ref.load_state_dict(policy.state_dict())
 
-      for batch_optimization_epoch in range(n_ppo_iterations):
+      plot_graph = (train_step % 100 == 0) and train_step > 0
+      if plot_graph:
+        for step in episodes[0].steps:
+          print("reward:", step.reward)
+          print("done:", step.done)
+          print("probs:", step.action_probs)
+          print("selection:", step.action_selection)
+          plt.title("Step: " + str(train_step))
+          state = step.global_state
+          visualizer.render_scene(
+            {
+              agent: {
+                "xy": (state.agent_positions[agent].x, state.agent_positions[agent].y),
+                "color": "red",
+                "action_probs": step.action_probs[agent].tolist(),
+                # "action_values": action_values_per_agent[agent].tolist(),
+              }
+              for agent in episodes[0].agents
+            },
+            {
+              f"task:{i}": {
+                "xy": (task.x, task.y),
+                "color": "blue"
+              }
+              for i, task in enumerate(state.tasks)
+            },
+          )
+
+      for ppo_iter in range(n_ppo_iterations):
         optimizer.zero_grad()
 
         discount_factor = 0.99
@@ -357,98 +387,94 @@ def main():
         for episode in episodes:
           episode.populate_discounted_rewards(discount_factor)
 
-        # calculate loss for each agent one at a time
-        for agent_i in range(len(environment.agents)):
-          agent = environment.agents[agent_i]
-          selected_action_logprobs = []
-          selected_action_logprobs_ref = []
-          agent_values = []
-          entropies = []
+          # calculate loss for each agent one at a time
+          for agent_i in range(len(environment.agents)):
+            agent = environment.agents[agent_i]
+            selected_action_logprobs = []
+            selected_action_logprobs_ref = []
+            values = []
+            entropies = []
 
-          # Aggregate relevant information from episode
-          for step_i, step in enumerate(episode.steps):
-            local_graph = step.local_graph[agent]
-            action_selection = step.action_selection[agent]
-            action_availability = step.action_availability[agent]
+            # Aggregate relevant information from episode
+            for step_i, episode_step in enumerate(episode.steps):
+              local_graph = episode_step.local_graph[agent]
+              action_selection = episode_step.action_selection[agent]
+              action_availability = episode_step.action_availability[agent]
 
-            assert action_selection in action_availability
+              assert action_selection in action_availability
 
-            # Forward pass: Get action logits and value.
-            out = policy(local_graph.x_dict, local_graph.edge_index_dict)
-            _logits = out['agent'][agent_i]
-            logits = _logits[action_availability]
+              # Forward pass: Get action logits and value.
+              out = policy(local_graph.x_dict, local_graph.edge_index_dict)
+              _logits = out['agent'][agent_i]
+              logits = _logits[action_availability]
 
-            out = valuefunction(global_graph.x_dict, global_graph.edge_index_dict)
-            value = out['agent'].squeeze(-1)[agent_i]
+              out = valuefunction(global_graph.x_dict, global_graph.edge_index_dict)
+              value = out['agent'].squeeze(-1)[agent_i]
 
 
-            with torch.no_grad():
-              out_ref = policy_ref(local_graph.x_dict, local_graph.edge_index_dict)
-              logits_ref = out_ref['agent'][agent_i][action_availability]
+              with torch.no_grad():
+                out_ref = policy_ref(local_graph.x_dict, local_graph.edge_index_dict)
+                logits_ref = out_ref['agent'][agent_i][action_availability]
 
-            # Store logprobs for executed policy
-            logprobs = torch.log_softmax(logits, dim=-1)
-            logprobs_ref = torch.log_softmax(logits_ref, dim=-1)
-            action_selection_index = action_availability.index(action_selection)
-            selected_action_logprobs.append(logprobs[action_selection_index])
-            selected_action_logprobs_ref.append(logprobs_ref[action_selection_index])
+              # Store logprobs for executed policy
+              logprobs = torch.log_softmax(logits, dim=-1)
+              logprobs_ref = torch.log_softmax(logits_ref, dim=-1)
+              action_selection_index = action_availability.index(action_selection)
+              selected_action_logprobs.append(logprobs[action_selection_index])
+              selected_action_logprobs_ref.append(logprobs_ref[action_selection_index])
 
-            # Store state values
-            agent_values.append(value)
+              # Store state values
+              values.append(value)
 
-            # Store entropy
-            entropy = -torch.sum(logprobs * torch.exp(logprobs), dim=-1)
-            entropies.append(entropy)
+              # Store entropy
+              entropy = -torch.sum(logprobs * torch.exp(logprobs), dim=-1)
+              entropies.append(entropy)
 
-          selected_action_logprobs = torch.stack(selected_action_logprobs)
-          selected_action_logprobs_ref = torch.stack(selected_action_logprobs_ref).detach()
-          agent_values = torch.stack(agent_values)
-          entropies = torch.stack(entropies)
+              # enumerate(episode.steps)
 
-          plot_graph = (step_number == 100)
-          if plot_graph:
-            print("reward:", reward_per_agent)
-            print("done:", done)
-            plt.title("Step: " + str(step_number))
-            visualizer.render_scene(
-              {
-                agent: {
-                  "xy": (state.agent_positions[agent].x, state.agent_positions[agent].y),
-                  "color": "red",
-                  "action_probs": action_probs_per_agent[agent].tolist(),
-                  "action_values": action_values_per_agent[agent].tolist(),
-                }
-                for agent in environment.agents
-              },
-              {
-                f"task:{i}": {
-                  "xy": (task.x, task.y),
-                  "color": "blue"
-                }
-                for i, task in enumerate(state.tasks)
-              },
-            )
- 
-          discounted_rewards = torch.tensor([
-            step.discounted_reward[agent] # type: ignore
-            for step in episode.steps
-          ])
+            selected_action_logprobs = torch.stack(selected_action_logprobs)
+            selected_action_logprobs_ref = torch.stack(selected_action_logprobs_ref).detach()
+            values = torch.stack(values)
+            entropies = torch.stack(entropies)
+  
+            discounted_rewards = torch.tensor([
+              step.discounted_reward[agent] # type: ignore
+              for step in episode.steps
+            ])
 
-          # PPO loss
-          ratios = selected_action_logprobs - selected_action_logprobs_ref
-          clipped_ratios = torch.clamp(ratios, -0.2, 0.2)
-          advantage = discounted_rewards - agent_values.detach()
-          # loss could be really really positive if, for example, ratios * advantage were really negative.
-          actor_loss = -torch.min(ratios * advantage, clipped_ratios * advantage).mean()
-          critic_loss = F.smooth_l1_loss(agent_values, discounted_rewards)
-          agent_loss = critic_loss + actor_loss - entropy_weight * entropies.mean()
-          agent_loss.backward()
+            # PPO loss
+            ratios = selected_action_logprobs - selected_action_logprobs_ref
+            clipped_ratios = torch.clamp(ratios, -0.2, 0.2)
+            advantage = discounted_rewards - values.detach()
 
-          total_policy_loss += actor_loss.item()
-          total_qfunction_loss += critic_loss.item()
+            # print advantage per action
+            if ppo_iter == 0 and plot_graph:
+              print("### Agent:", environment.agents[agent_i])
 
-        # Take optimization step after all agents have had gradient updates allowed
+              advantage_per_action = {}
+              for step_i, step in enumerate(episode.steps):
+                action_selection = step.action_selection[agent]
+                advantage_per_action[action_selection] = advantage[step_i].item()
+              
+              print("advantage_per_action:", advantage_per_action)
+              print("discounted rewards:", discounted_rewards)
+              print("values:", values)
+
+            # loss could be really really positive if, for example, ratios * advantage were really negative.
+            actor_loss = -torch.min(ratios * advantage, clipped_ratios * advantage).mean()
+            critic_loss = F.smooth_l1_loss(values, discounted_rewards)
+            agent_loss = critic_loss + actor_loss - entropy_weight * entropies.mean()
+            agent_loss.backward()
+
+            total_policy_loss += actor_loss.item()
+            total_qfunction_loss += critic_loss.item()
+
+            # end range(len(environment.agents))
+          # end iteration over episodes
+
         optimizer.step()
+
+        # end range(n_ppo_iterations)
 
       wandb.log({
         'epsilon': epsilon,
