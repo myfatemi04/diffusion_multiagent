@@ -8,7 +8,9 @@ Approach:
    take with a specialized "action readout" head
 """
 
+import copy
 from dataclasses import dataclass
+
 import grid_world_environment as E
 import numpy as np
 import torch
@@ -16,10 +18,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch_geometric.data
 import torch_geometric.nn as gnn
-from matplotlib import pyplot as plt
-from sparse_graph_network import SparseGraphNetwork, SparseGraphNetworkWithPositionalEmbedding
 import visualizer
 from marl import MultiAgentEpisode, MultiAgentSARSTuple
+from matplotlib import pyplot as plt
+from sparse_graph_network import (SparseGraphNetwork,
+                                  SparseGraphNetworkWithPositionalEmbedding)
+from concurrent.futures import ThreadPoolExecutor
 
 
 def create_global_feature_graph(global_state: E.GlobalState, agent_action_selections: dict[str, int], agent_task_connectiity_radius: float, agent_agent_connectivity_radius: float):
@@ -143,9 +147,100 @@ def create_local_feature_graph(
 
   return data, visible_agent_tags
 
+def collect_episode(
+  environment: E.TaskSimulator,
+  policy: SparseGraphNetworkWithPositionalEmbedding,
+  epsilon: float,
+  policy_agent_task_connectivity_radius: float,
+  policy_agent_agent_connectivity_radius: float,
+  qfunction_agent_task_connectivity_radius: float,
+  qfunction_agent_agent_connectivity_radius: float
+):
+  obs = environment.reset()
+
+  steps: list[MultiAgentSARSTuple] = []
+
+  is_artificial_episode = False # torch.rand(()).item() < 0.1
+
+  # run for a max of 20 steps per episode
+  for episode_step in range(20):
+    # Simultaneously generate an action for all agents
+    action_selection_per_agent = {}
+    action_probs_per_agent = {}
+    # action_values_per_agent = {}
+    local_graphs_per_agent = {}
+    local_feature_visible_agents = {}
+
+    # Policy rollout. No grad.
+    with torch.no_grad():
+      for agent in environment.agents:
+        # This feature map represents this specific agent's field of view
+        local_features, agent_order = create_local_feature_graph(obs.state, policy_agent_task_connectivity_radius, agent, policy_agent_agent_connectivity_radius)
+        out = policy(local_features.x_dict, local_features.edge_index_dict)
+        action_logit_vector = out['agent']
+
+        local_feature_visible_agents[agent] = agent_order
+
+        my_agent_index = agent_order.index(agent)
+        # this is generated a few lines above
+        action_space = obs.action_space[agent]
+
+        if torch.rand(()).item() < epsilon:
+          selection_index = torch.randint(len(action_space), (1,))
+          action_probability_vector = torch.ones(len(action_space)) / len(action_space)
+        # if is_artificial_episode and train_step < epsilon_decay:
+        #   # Use gold demonstrations 50% of the time
+        #   action_logit_vector_dummy = torch.zeros_like(action_logit_vector[0])
+        #   action_logit_vector_dummy[[0, 1, 2]] = -100
+        #   action_logit_vector_dummy[[3, 4]] = 0
+        #   action_probability_vector = F.softmax(action_logit_vector_dummy[action_space], dim=-1)
+        #   selection_index = torch.multinomial(action_probability_vector, 1, False)
+        else:
+          action_probability_vector = F.softmax(action_logit_vector[my_agent_index, action_space], dim=-1)
+          # # give each action at least 1/(2 * num_actions) probability of being selected
+          # num_actions = len(action_availability)
+          # action_probability_vector = (action_probability_vector * (1 - 1/(2 * num_actions))) + (1/(2 * num_actions))
+          selection_index = torch.multinomial(action_probability_vector, 1, False)
+
+          # if episode > epsilon_decay:
+          #   print(action_logit_vector, action_probability_vector)
+
+        action_selection_per_agent[agent] = action_space[selection_index]
+        local_graphs_per_agent[agent] = local_features
+        action_probs_per_agent[agent] = torch.zeros(5)
+        action_probs_per_agent[agent][action_space] = action_probability_vector
+
+      # Simultaneously take action step
+      global_graph = create_global_feature_graph(obs.state, action_selection_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
+      # next_global_graph = create_global_feature_graph(next_state, next_action_availability_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
+      next_obs = environment.step(action_selection_per_agent)
+      steps.append(MultiAgentSARSTuple(
+        next_obs.state,
+        # next_state,
+        local_graphs_per_agent,
+        local_feature_visible_agents,
+        global_graph,
+        # next_global_graph,
+        action_selection_per_agent,
+        obs.action_space,
+        action_probs_per_agent,
+        obs.reward,
+        next_obs.done,
+        obs.total_completed_tasks,
+      ))
+
+      obs = next_obs
+
+      if next_obs.done:
+        break
+
+  return MultiAgentEpisode(environment.agents, steps)
+
+
 def main():
-  import wandb
   import random
+
+  import wandb
 
   torch.random.manual_seed(0)
   np.random.seed(0)
@@ -159,7 +254,7 @@ def main():
   alg = 'v000-sparse-graph-network'
   n_batches = 1000000
   n_ppo_iterations = 1
-  n_batch_episodes = 1
+  n_batch_episodes = 16
   lr = 1e-3
 
   # Make an epsilon value that decays exponentially from 0.5 to 0.005 over the first 10000 episodes, then goes to 0.
@@ -246,97 +341,24 @@ def main():
     np.log(end_epsilon) * (episode / epsilon_decay)
   )
 
+  # vectorize environment
+  environments = [copy.deepcopy(environment) for _ in range(n_batch_episodes)]
+
   try:
     for train_step in range(n_batches):
 
       epsilon = epsilon_(train_step) if train_step < epsilon_decay else 0
 
       # Create state-action-reward streams for each agent.
-      episodes: list[MultiAgentEpisode] = []
-
-      for _ in range(n_batch_episodes):
-        obs = environment.reset()
-
-        steps: list[MultiAgentSARSTuple] = []
-
-        is_artificial_episode = False # torch.rand(()).item() < 0.1
-
-        # run for a max of 20 steps per episode
-        for episode_step in range(20):
-          # Simultaneously generate an action for all agents
-          action_selection_per_agent = {}
-          action_probs_per_agent = {}
-          # action_values_per_agent = {}
-          local_graphs_per_agent = {}
-          local_feature_visible_agents = {}
-
-          # Policy rollout. No grad.
-          with torch.no_grad():
-            for agent in environment.agents:
-              # This feature map represents this specific agent's field of view
-              local_features, agent_order = create_local_feature_graph(obs.state, policy_agent_task_connectivity_radius, agent, policy_agent_agent_connectivity_radius)
-              out = policy(local_features.x_dict, local_features.edge_index_dict)
-              action_logit_vector = out['agent']
-
-              local_feature_visible_agents[agent] = agent_order
-
-              my_agent_index = agent_order.index(agent)
-              # this is generated a few lines above
-              action_space = obs.action_space[agent]
-
-              if torch.rand(()).item() < epsilon:
-                selection_index = torch.randint(len(action_space), (1,))
-                action_probability_vector = torch.ones(len(action_space)) / len(action_space)
-              # if is_artificial_episode and train_step < epsilon_decay:
-              #   # Use gold demonstrations 50% of the time
-              #   action_logit_vector_dummy = torch.zeros_like(action_logit_vector[0])
-              #   action_logit_vector_dummy[[0, 1, 2]] = -100
-              #   action_logit_vector_dummy[[3, 4]] = 0
-              #   action_probability_vector = F.softmax(action_logit_vector_dummy[action_space], dim=-1)
-              #   selection_index = torch.multinomial(action_probability_vector, 1, False)
-              else:
-                action_probability_vector = F.softmax(action_logit_vector[my_agent_index, action_space], dim=-1)
-                # # give each action at least 1/(2 * num_actions) probability of being selected
-                # num_actions = len(action_availability)
-                # action_probability_vector = (action_probability_vector * (1 - 1/(2 * num_actions))) + (1/(2 * num_actions))
-                selection_index = torch.multinomial(action_probability_vector, 1, False)
-
-                # if episode > epsilon_decay:
-                #   print(action_logit_vector, action_probability_vector)
-
-              action_selection_per_agent[agent] = action_space[selection_index]
-              local_graphs_per_agent[agent] = local_features
-              action_probs_per_agent[agent] = torch.zeros(5)
-              action_probs_per_agent[agent][action_space] = action_probability_vector
-
-            # Simultaneously take action step
-            global_graph = create_global_feature_graph(obs.state, action_selection_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
-            # next_global_graph = create_global_feature_graph(next_state, next_action_availability_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
-            next_obs = environment.step(action_selection_per_agent)
-            steps.append(MultiAgentSARSTuple(
-              next_obs.state,
-              # next_state,
-              local_graphs_per_agent,
-              local_feature_visible_agents,
-              global_graph,
-              # next_global_graph,
-              action_selection_per_agent,
-              obs.action_space,
-              action_probs_per_agent,
-              obs.reward,
-              next_obs.done,
-              obs.total_completed_tasks,
-            ))
-
-            obs = next_obs
-
-            if next_obs.done:
-              break
-        
-        episodes.append(MultiAgentEpisode(environment.agents, steps))
-        # if is_artificial_episode:
-        #   print([step.global_state.agent_positions for step in episodes[-1].steps])
-        #   assert sum(episodes[-1].steps[-1].reward.values()) > 0
+      episodes = [
+        collect_episode(env, policy, epsilon, policy_agent_task_connectivity_radius, policy_agent_agent_connectivity_radius, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
+        for env in environments
+      ]
+      # with ThreadPoolExecutor() as executor:
+      #   episodes = list(executor.map(
+      #     lambda env: collect_episode(env, policy, epsilon, policy_agent_task_connectivity_radius, policy_agent_agent_connectivity_radius, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius),
+      #     environments
+      #   ))
 
       # Log reward statistics
       mean_episode_reward = sum(
@@ -399,6 +421,7 @@ def main():
               local_graph = episode_step.local_graph[agent]
               action_selection = episode_step.action_selection[agent]
               action_space = episode_step.action_availability[agent]
+              global_graph = episode_step.global_graph
 
               assert action_selection in action_space
 
