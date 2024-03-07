@@ -168,29 +168,29 @@ def main():
   epsilon_decay = 500
   entropy_weight = 1e-4
 
-  wandb.init(mode="disabled")
-  # wandb.init(
-  #   # set the wandb project where this run will be logged
-  #   project="arl-collab-planning",
-  #   # track hyperparameters and run metadata
-  #   config={
-  #     "lr_schedule": "constant",
-  #     # "initial_lr": initial_lr,
-  #     # "end_lr": end_lr,
-  #     "lr": lr,
-  #     "architecture": alg,
-  #     "n_episodes": n_batches,
-  #     "n_scenarios": n_scenarios,
-  #     "n_agents": n_agents,
-  #     "n_tasks": n_tasks,
-  #     "n_ppo_iterations": n_ppo_iterations,
-  #     "n_batch_episodes": n_batch_episodes,
-  #     "start_epsilon": start_epsilon,
-  #     "end_epsilon": end_epsilon,
-  #     "epsilon_decay": epsilon_decay,
-  #     "entropy_weight": entropy_weight,
-  #   }
-  # )
+  # wandb.init(mode="disabled")
+  wandb.init(
+    # set the wandb project where this run will be logged
+    project="arl-collab-planning",
+    # track hyperparameters and run metadata
+    config={
+      "lr_schedule": "constant",
+      # "initial_lr": initial_lr,
+      # "end_lr": end_lr,
+      "lr": lr,
+      "architecture": alg,
+      "n_episodes": n_batches,
+      "n_scenarios": n_scenarios,
+      "n_agents": n_agents,
+      "n_tasks": n_tasks,
+      "n_ppo_iterations": n_ppo_iterations,
+      "n_batch_episodes": n_batch_episodes,
+      "start_epsilon": start_epsilon,
+      "end_epsilon": end_epsilon,
+      "epsilon_decay": epsilon_decay,
+      "entropy_weight": entropy_weight,
+    }
+  )
 
   environment = E.TaskSimulator(
     grid=np.zeros((10, 10)),
@@ -347,7 +347,7 @@ def main():
 
       policy_ref.load_state_dict(policy.state_dict())
 
-      plot_graph = (train_step % 100 == 0) and train_step > 0
+      plot_graph = False # (train_step % 100 == 0) and train_step > 0
       if plot_graph:
         for step in episodes[0].steps:
           print("reward:", step.reward)
