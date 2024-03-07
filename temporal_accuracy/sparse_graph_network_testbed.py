@@ -259,7 +259,7 @@ def main():
 
         steps: list[MultiAgentSARSTuple] = []
 
-        is_artificial_episode = False # torch.rand(()).item() < 0.5
+        is_artificial_episode = torch.rand(()).item() < 0.1
 
         # run for a max of 20 steps per episode
         for episode_step in range(20):
@@ -283,6 +283,7 @@ def main():
 
               # if torch.rand(()).item() < epsilon:
               #   selection_index = torch.randint(len(action_availability), (1,))
+              #   action_probability_vector = torch.ones(len(action_availability)) / len(action_availability)
               # else:
               if is_artificial_episode and train_step < epsilon_decay:
                 # Use gold demonstrations 50% of the time
@@ -308,11 +309,14 @@ def main():
 
             # Simultaneously take action step
             global_graph = create_global_feature_graph(state, action_selection_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
-
+            # next_global_graph = create_global_feature_graph(next_state, next_action_availability_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
+            next_state, next_action_availability_per_agent, reward_per_agent, done = environment.step(action_selection_per_agent)
             steps.append(MultiAgentSARSTuple(
               state,
+              # next_state,
               local_graphs_per_agent,
               global_graph,
+              # next_global_graph,
               action_selection_per_agent,
               action_availability_per_agent,
               action_probs_per_agent,
@@ -320,24 +324,16 @@ def main():
               done,
             ))
 
-            state, action_availability_per_agent, reward_per_agent, done = environment.step(action_selection_per_agent)
+            state = next_state
+            action_availability_per_agent = next_action_availability_per_agent
 
-          if done:
-            break
-
-          # plot agent locations every 100 episodes
-          # if (episode + 1) % 100 == 0:
-          #   plt.clf()
-          #   agent_x = [state.agent_positions[agent].x for agent in state.agent_positions]
-          #   agent_y = [state.agent_positions[agent].y for agent in state.agent_positions]
-          #   plt.scatter(agent_x, agent_y, c='r', label='agents')
-          #   task_x = [task.x for task in state.tasks]
-          #   task_y = [task.y for task in state.tasks]
-          #   plt.scatter(task_x, task_y, c='b', label='tasks')
-          #   plt.legend()
-          #   plt.pause(0.00001)
+            if done:
+              break
         
         episodes.append(MultiAgentEpisode(environment.agents, steps))
+        # if is_artificial_episode:
+        #   print([step.global_state.agent_positions for step in episodes[-1].steps])
+        #   assert sum(episodes[-1].steps[-1].reward.values()) > 0
 
       # Log reward statistics
       mean_episode_reward = sum(

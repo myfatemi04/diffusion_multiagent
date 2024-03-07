@@ -7,8 +7,10 @@ import grid_world_environment as E
 @dataclass
 class MultiAgentSARSTuple:
   global_state: E.GlobalState
+  # next_global_state: E.GlobalState
   local_graph: dict[str, torch_geometric.data.HeteroData]
   global_graph: torch_geometric.data.HeteroData
+  # next_global_graph: torch_geometric.data.HeteroData
   action_selection: dict[str, int]
   action_availability: dict[str, list[int]]
   action_probs: dict[str, torch.Tensor]
