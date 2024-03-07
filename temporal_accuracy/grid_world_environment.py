@@ -51,19 +51,19 @@ class GlobalState:
     height: int
 
 class TaskSimulator:
-    def __init__(self, grid: np.ndarray, tasks: list[Task]):
+    def __init__(self, grid: np.ndarray, tasks: list[Task], agents: list[str], agent_extrinsics: dict[str, AgentExtrinsics]):
         self._original_tasks = copy.deepcopy(tasks)
+        self._original_agent_extrinsics = copy.deepcopy(agent_extrinsics)
         self.tasks = tasks
-        self.agents = ['agent:0']
-        self.agent_extrinsics = {
-            'agent:0': AgentExtrinsics(x=10, y=10)
-        }
+        self.agents = agents
+        self.agent_extrinsics = agent_extrinsics
         self.grid = grid
 
     def reset(self) -> tuple[GlobalState, dict[str, list[int]], dict[str, float], bool]:
         self.tasks = copy.deepcopy(self._original_tasks)
-        self.agent_extrinsics['agent:0'].x = np.random.randint(0, self.width)
-        self.agent_extrinsics['agent:0'].y = np.random.randint(0, self.height)
+        # self.agent_extrinsics['agent:0'].x = np.random.randint(0, self.width)
+        # self.agent_extrinsics['agent:0'].y = np.random.randint(0, self.height)
+        self.agent_extrinsics = copy.deepcopy(self._original_agent_extrinsics)
 
         # Return the state information, the set of valid actions, and the reward vector.
         num_incomplete_tasks = sum(1 for task in self.tasks if not task.completed)

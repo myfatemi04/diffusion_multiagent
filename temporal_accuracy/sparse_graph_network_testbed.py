@@ -150,7 +150,16 @@ def main():
   n_tasks = 2
   alg = 'v000-sparse-graph-network'
   n_episodes = 1000000
+  n_ppo_iterations = 1
+  n_batch_episodes = 10
   lr = 1e-3
+
+  # Make an epsilon value that decays exponentially from 0.5 to 0.005 over the first 10000 episodes, then goes to 0.
+  start_epsilon = 0.5
+  end_epsilon = 0.005
+  epsilon_decay = 500
+  entropy_weight = 1e-5
+
   wandb.init(
     # set the wandb project where this run will be logged
     project="arl-collab-planning",
@@ -165,15 +174,27 @@ def main():
       "n_scenarios": n_scenarios,
       "n_agents": n_agents,
       "n_tasks": n_tasks,
+      "n_ppo_iterations": n_ppo_iterations,
+      "n_batch_episodes": n_batch_episodes,
+      "start_epsilon": start_epsilon,
+      "end_epsilon": end_epsilon,
+      "epsilon_decay": epsilon_decay,
+      "entropy_weight": entropy_weight,
     }
   )
 
   environment = E.TaskSimulator(
-    grid=np.zeros((20, 20)),
+    grid=np.zeros((10, 10)),
+    # grid=np.zeros((20, 20)),
     tasks=[
-      E.Task(x=5, y=5, reward=1),
-      E.Task(x=15, y=15, reward=1),
-    ]
+      E.Task(x=0, y=0, reward=1),
+      # E.Task(x=5, y=5, reward=1),
+      # E.Task(x=15, y=15, reward=1),
+    ],
+    agents=['agent:0'],
+    agent_extrinsics={
+      'agent:0': E.AgentExtrinsics(x=5, y=5)
+    }
   )
   
   dummy_global_state = E.GlobalState(
@@ -209,12 +230,6 @@ def main():
   policy_agent_agent_connectivity_radius = 10
   policy_agent_task_connectivity_radius = 10
 
-  # run_optimization_step_every = 10
-
-  # Make an epsilon value that decays exponentially from 0.5 to 0.005 over the first 10000 episodes, then goes to 0.
-  start_epsilon = 0.5
-  end_epsilon = 0.005
-  epsilon_decay = 5000
   # exponential decay from end epsilon to start epsilon over epsilon_decay episodes.
   # can think of this as a linear interpolation in logarithmic space.
   epsilon_ = lambda episode: np.exp(
@@ -229,72 +244,73 @@ def main():
       epsilon = epsilon_(episode) if episode < epsilon_decay else 0
 
       # Create state-action-reward streams for each agent.
-      SARS_tuples_per_agent = {agent: [] for agent in environment.agents}
+      SARS_tuples = []
 
-      # run for a max of 20 steps per episode
-      for step in range(20):
-        # Simultaneously generate an action for all agents
-        action_selection_per_agent = {}
-        local_graphs_per_agent = {}
+      for _ in range(n_batch_episodes):
+        # run for a max of 20 steps per episode
+        for step in range(20):
+          # Simultaneously generate an action for all agents
+          action_selection_per_agent = {}
+          local_graphs_per_agent = {}
 
-        # Policy rollout. No grad.
-        with torch.no_grad():
-          for agent in environment.agents:
-            # This feature map represents this specific agent's field of view
-            local_features, agent_order = create_local_feature_graph(state, policy_agent_task_connectivity_radius, agent, policy_agent_agent_connectivity_radius)
-            out = policy(local_features.x_dict, local_features.edge_index_dict)
-            action_logit_vector = out['agent']
+          # Policy rollout. No grad.
+          with torch.no_grad():
+            for agent in environment.agents:
+              # This feature map represents this specific agent's field of view
+              local_features, agent_order = create_local_feature_graph(state, policy_agent_task_connectivity_radius, agent, policy_agent_agent_connectivity_radius)
+              out = policy(local_features.x_dict, local_features.edge_index_dict)
+              action_logit_vector = out['agent']
 
-            my_agent_index = agent_order.index(agent)
-            # this is generated a few lines above
-            action_availability = action_availability_per_agent[agent]
+              my_agent_index = agent_order.index(agent)
+              # this is generated a few lines above
+              action_availability = action_availability_per_agent[agent]
 
-            if torch.rand(()).item() < epsilon:
-              selection_index = torch.randint(len(action_availability), (1,))
-            else:
-              action_probability_vector = F.softmax(action_logit_vector[my_agent_index, action_availability], dim=-1)
-              # # give each action at least 1/(2 * num_actions) probability of being selected
-              # num_actions = len(action_availability)
-              # action_probability_vector = (action_probability_vector * (1 - 1/(2 * num_actions))) + (1/(2 * num_actions))
-              selection_index = torch.multinomial(action_probability_vector, 1, False)
+              if torch.rand(()).item() < epsilon:
+                selection_index = torch.randint(len(action_availability), (1,))
+              else:
+                action_probability_vector = F.softmax(action_logit_vector[my_agent_index, action_availability], dim=-1)
+                # # give each action at least 1/(2 * num_actions) probability of being selected
+                # num_actions = len(action_availability)
+                # action_probability_vector = (action_probability_vector * (1 - 1/(2 * num_actions))) + (1/(2 * num_actions))
+                selection_index = torch.multinomial(action_probability_vector, 1, False)
 
-            action_selection_per_agent[agent] = action_availability[selection_index]
-            local_graphs_per_agent[agent] = local_features
+                if episode > epsilon_decay:
+                  print(action_logit_vector, action_probability_vector)
 
-          # Simultaneously take action step
-          global_graph = create_global_feature_graph(state, action_selection_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
-          state, action_availability_per_agent, reward_per_agent, done = environment.step(action_selection_per_agent)
+              action_selection_per_agent[agent] = action_availability[selection_index]
+              local_graphs_per_agent[agent] = local_features
 
-          for agent in environment.agents:
-            SARS_tuples_per_agent[agent].append((
-              local_graphs_per_agent[agent],
-              global_graph,
-              action_selection_per_agent[agent],
-              reward_per_agent[agent],
-            ))
+            # Simultaneously take action step
+            global_graph = create_global_feature_graph(state, action_selection_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
+            state, action_availability_per_agent, reward_per_agent, done = environment.step(action_selection_per_agent)
 
-        # plot agent locations every 100 episodes
-        # if (episode + 1) % 100 == 0:
-        #   plt.clf()
-        #   agent_x = [state.agent_positions[agent].x for agent in state.agent_positions]
-        #   agent_y = [state.agent_positions[agent].y for agent in state.agent_positions]
-        #   plt.scatter(agent_x, agent_y, c='r', label='agents')
-        #   task_x = [task.x for task in state.tasks]
-        #   task_y = [task.y for task in state.tasks]
-        #   plt.scatter(task_x, task_y, c='b', label='tasks')
-        #   plt.legend()
-        #   plt.pause(0.00001)
+            for agent_i, agent in enumerate(environment.agents):
+              SARS_tuples.append((
+                local_graphs_per_agent[agent],
+                global_graph,
+                action_selection_per_agent[agent],
+                agent_i,
+                reward_per_agent[agent],
+              ))
 
-        if done:
-          break
+          if done:
+            break
 
-      
+          # plot agent locations every 100 episodes
+          # if (episode + 1) % 100 == 0:
+          #   plt.clf()
+          #   agent_x = [state.agent_positions[agent].x for agent in state.agent_positions]
+          #   agent_y = [state.agent_positions[agent].y for agent in state.agent_positions]
+          #   plt.scatter(agent_x, agent_y, c='r', label='agents')
+          #   task_x = [task.x for task in state.tasks]
+          #   task_y = [task.y for task in state.tasks]
+          #   plt.scatter(task_x, task_y, c='b', label='tasks')
+          #   plt.legend()
+          #   plt.pause(0.00001)
+
       # Log reward statistics
       total_reward = sum([
-        sum([
-          reward for (local_graph, global_graph, action_selection, reward) in SARS_tuples
-        ])
-        for SARS_tuples in SARS_tuples_per_agent.values()
+        reward for (local_graph, global_graph, action_selection, agent_i, reward) in SARS_tuples
       ])
 
       # Backpropagation
@@ -303,60 +319,60 @@ def main():
 
       policy_ref.load_state_dict(policy.state_dict())
 
-      num_ppo_iterations = 5
-      for batch_optimization_epoch in range(num_ppo_iterations):
+      for batch_optimization_epoch in range(n_ppo_iterations):
         optimizer.zero_grad()
 
-        # Accumulate gradients for each agent
-        for agent_i, agent in enumerate(environment.agents):
-          SARS_tuples = SARS_tuples_per_agent[agent]
-          discount_factor = 0.99
+        discount_factor = 0.99
 
-          # Calculates discounted rewards for THIS AGENT at EACH TIME STEP
-          discounted_rewards = [SARS_tuples[-1][3]]
-          for step_i in range(len(SARS_tuples) - 2, -1, -1):
-            reward_at_step_i = SARS_tuples[step_i][3]
-            discounted_reward_at_step_i = reward_at_step_i + discount_factor * discounted_rewards[-1]
-            discounted_rewards.append(discounted_reward_at_step_i)
+        # Calculates discounted rewards for THIS AGENT at EACH TIME STEP
+        discounted_rewards = [SARS_tuples[-1][3]]
+        for step_i in range(len(SARS_tuples) - 2, -1, -1):
+          reward_at_step_i = SARS_tuples[step_i][3]
+          discounted_reward_at_step_i = reward_at_step_i + discount_factor * discounted_rewards[-1]
+          discounted_rewards.append(discounted_reward_at_step_i)
 
-          discounted_rewards = torch.tensor(discounted_rewards[::-1], dtype=torch.float32)
+        discounted_rewards = torch.tensor(discounted_rewards[::-1], dtype=torch.float32)
 
-          # Calculate global q-values for each time step
-          action_logprobs = []
-          action_logprobs_ref = []
-          action_values = []
-          for step_i, (local_graph, global_graph, action_selection, _reward) in enumerate(SARS_tuples):
-            out = policy(local_graph.x_dict, local_graph.edge_index_dict)
-            action_logit_vector = out['agent'][agent_i]
+        # Calculate global q-values for each time step
+        action_logprobs = []
+        action_logprobs_ref = []
+        action_values = []
+        entropies = []
+        for step_i, (local_graph, global_graph, action_selection, agent_i, _reward) in enumerate(SARS_tuples):
+          out = policy(local_graph.x_dict, local_graph.edge_index_dict)
+          action_logit_vector = out['agent'][agent_i]
 
-            with torch.no_grad():
-              out_ref = policy_ref(local_graph.x_dict, local_graph.edge_index_dict)
-              action_logit_vector_ref = out_ref['agent'][agent_i]
+          with torch.no_grad():
+            out_ref = policy_ref(local_graph.x_dict, local_graph.edge_index_dict)
+            action_logit_vector_ref = out_ref['agent'][agent_i]
 
-            action_logprob_vector = torch.log_softmax(action_logit_vector, dim=-1)
-            action_logprob_vector_ref = torch.log_softmax(action_logit_vector_ref, dim=-1)
+          action_logprob_vector = torch.log_softmax(action_logit_vector, dim=-1)
+          action_logprob_vector_ref = torch.log_softmax(action_logit_vector_ref, dim=-1)
 
-            action_values_for_all_agents = valuefunction(global_graph.x_dict, global_graph.edge_index_dict)['agent'].squeeze(-1)
-            action_values.append(action_values_for_all_agents[agent_i])
-            action_logprobs.append(action_logprob_vector[action_selection])
-            action_logprobs_ref.append(action_logprob_vector_ref[action_selection])
+          entropy = -torch.sum(action_logprob_vector * torch.exp(action_logprob_vector), dim=-1)
+          action_values_for_all_agents = valuefunction(global_graph.x_dict, global_graph.edge_index_dict)['agent'].squeeze(-1)
+          action_values.append(action_values_for_all_agents[agent_i])
+          action_logprobs.append(action_logprob_vector[action_selection])
+          action_logprobs_ref.append(action_logprob_vector_ref[action_selection])
+          entropies.append(entropy)
 
-          action_logprobs = torch.stack(action_logprobs)
-          action_logprobs_ref = torch.stack(action_logprobs_ref).detach()
-          action_values = torch.stack(action_values)
+        action_logprobs = torch.stack(action_logprobs)
+        action_logprobs_ref = torch.stack(action_logprobs_ref).detach()
+        action_values = torch.stack(action_values)
+        entropies = torch.stack(entropies)
 
-          # PPO loss
-          ratios = action_logprobs - action_logprobs_ref
-          clipped_ratios = torch.clamp(ratios, -0.2, 0.2)
-          advantage = discounted_rewards - action_values
-          # loss could be really really positive if, for example, ratios * advantage were really high.
-          actor_loss = -torch.min(ratios * advantage.detach(), clipped_ratios * advantage.detach()).mean()
-          critic_loss = F.mse_loss(action_values, discounted_rewards)
-          agent_loss = critic_loss + actor_loss
-          agent_loss.backward()
+        # PPO loss
+        ratios = action_logprobs - action_logprobs_ref
+        clipped_ratios = torch.clamp(ratios, -0.2, 0.2)
+        advantage = discounted_rewards - action_values.detach()
+        # loss could be really really positive if, for example, ratios * advantage were really high.
+        actor_loss = -torch.min(ratios * advantage, clipped_ratios * advantage).mean()
+        critic_loss = F.smooth_l1_loss(action_values, discounted_rewards)
+        agent_loss = critic_loss + actor_loss - entropy_weight * entropies.mean()
+        agent_loss.backward()
 
-          total_policy_loss += actor_loss.item()
-          total_qfunction_loss += critic_loss.item()
+        total_policy_loss += actor_loss.item()
+        total_qfunction_loss += critic_loss.item()
 
         # Take optimization step after all agents have had gradient updates allowed
         optimizer.step()
@@ -364,9 +380,9 @@ def main():
       wandb.log({
         'epsilon': epsilon,
         'total_reward': total_reward,
-        'total_loss': (total_policy_loss + total_qfunction_loss) / (len(environment.agents) * num_ppo_iterations),
-        'policy_loss': total_policy_loss / (len(environment.agents) * num_ppo_iterations),
-        'qfunction_loss': total_qfunction_loss / (len(environment.agents) * num_ppo_iterations),
+        'total_loss': (total_policy_loss + total_qfunction_loss) / (len(environment.agents) * n_ppo_iterations),
+        'policy_loss': total_policy_loss / (len(environment.agents) * n_ppo_iterations),
+        'qfunction_loss': total_qfunction_loss / (len(environment.agents) * n_ppo_iterations),
       })
   except Exception as e:
     print(e)
