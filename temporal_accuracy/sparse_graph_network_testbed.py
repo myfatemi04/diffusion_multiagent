@@ -193,16 +193,15 @@ def main():
   )
 
   environment = E.TaskSimulator(
-    grid=np.zeros((10, 10)),
-    # grid=np.zeros((20, 20)),
+    grid=np.zeros((20, 20)),
     tasks=[
-      E.Task(x=0, y=0, reward=1),
-      # E.Task(x=5, y=5, reward=1),
-      # E.Task(x=15, y=15, reward=1),
+      E.Task(x=5, y=5, reward=1),
+      E.Task(x=15, y=15, reward=1),
     ],
-    agents=['agent:0'], # , 'agent:1'],
+    agents=['agent:0', 'agent:1'],
     agent_extrinsics={
-      'agent:0': E.AgentExtrinsics(x=5, y=5)
+      'agent:0': E.AgentExtrinsics(x=5, y=12),
+      'agent:1': E.AgentExtrinsics(x=15, y=8)
     }
   )
   
@@ -255,11 +254,11 @@ def main():
       episodes: list[MultiAgentEpisode] = []
 
       for _ in range(n_batch_episodes):
-        state, action_availability_per_agent, reward_per_agent, done = environment.reset()
+        obs = environment.reset()
 
         steps: list[MultiAgentSARSTuple] = []
 
-        is_artificial_episode = torch.rand(()).item() < 0.1
+        is_artificial_episode = False # torch.rand(()).item() < 0.1
 
         # run for a max of 20 steps per episode
         for episode_step in range(20):
@@ -268,6 +267,7 @@ def main():
           action_probs_per_agent = {}
           # action_values_per_agent = {}
           local_graphs_per_agent = {}
+          local_feature_visible_agents = {}
 
           # Policy rollout. No grad.
           with torch.no_grad():
@@ -277,9 +277,11 @@ def main():
               out = policy(local_features.x_dict, local_features.edge_index_dict)
               action_logit_vector = out['agent']
 
+              local_feature_visible_agents[agent] = agent_order
+
               my_agent_index = agent_order.index(agent)
               # this is generated a few lines above
-              action_availability = action_availability_per_agent[agent]
+              action_space = obs.action_space[agent]
 
               # if torch.rand(()).item() < epsilon:
               #   selection_index = torch.randint(len(action_availability), (1,))
@@ -290,10 +292,10 @@ def main():
                 action_logit_vector_dummy = torch.zeros_like(action_logit_vector[0])
                 action_logit_vector_dummy[[0, 1, 2]] = -100
                 action_logit_vector_dummy[[3, 4]] = 0
-                action_probability_vector = F.softmax(action_logit_vector_dummy[action_availability], dim=-1)
+                action_probability_vector = F.softmax(action_logit_vector_dummy[action_space], dim=-1)
                 selection_index = torch.multinomial(action_probability_vector, 1, False)
               else:
-                action_probability_vector = F.softmax(action_logit_vector[my_agent_index, action_availability], dim=-1)
+                action_probability_vector = F.softmax(action_logit_vector[my_agent_index, action_space], dim=-1)
                 # # give each action at least 1/(2 * num_actions) probability of being selected
                 # num_actions = len(action_availability)
                 # action_probability_vector = (action_probability_vector * (1 - 1/(2 * num_actions))) + (1/(2 * num_actions))
@@ -302,32 +304,33 @@ def main():
                 # if episode > epsilon_decay:
                 #   print(action_logit_vector, action_probability_vector)
 
-              action_selection_per_agent[agent] = action_availability[selection_index]
+              action_selection_per_agent[agent] = action_space[selection_index]
               local_graphs_per_agent[agent] = local_features
               action_probs_per_agent[agent] = torch.zeros(5)
-              action_probs_per_agent[agent][action_availability] = action_probability_vector
+              action_probs_per_agent[agent][action_space] = action_probability_vector
 
             # Simultaneously take action step
             global_graph = create_global_feature_graph(state, action_selection_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
             # next_global_graph = create_global_feature_graph(next_state, next_action_availability_per_agent, qfunction_agent_task_connectivity_radius, qfunction_agent_agent_connectivity_radius)
-            next_state, next_action_availability_per_agent, reward_per_agent, done = environment.step(action_selection_per_agent)
+            next_obs = environment.step(action_selection_per_agent)
             steps.append(MultiAgentSARSTuple(
-              state,
+              next_obs.state,
               # next_state,
               local_graphs_per_agent,
+              local_feature_visible_agents,
               global_graph,
               # next_global_graph,
               action_selection_per_agent,
-              action_availability_per_agent,
+              obs.action_space,
               action_probs_per_agent,
-              reward_per_agent,
-              done,
+              obs.reward,
+              next_obs.done,
+              obs.total_completed_tasks,
             ))
 
-            state = next_state
-            action_availability_per_agent = next_action_availability_per_agent
+            obs = next_obs
 
-            if done:
+            if next_obs.done:
               break
         
         episodes.append(MultiAgentEpisode(environment.agents, steps))
@@ -395,27 +398,28 @@ def main():
             for step_i, episode_step in enumerate(episode.steps):
               local_graph = episode_step.local_graph[agent]
               action_selection = episode_step.action_selection[agent]
-              action_availability = episode_step.action_availability[agent]
+              action_space = episode_step.action_availability[agent]
 
-              assert action_selection in action_availability
+              assert action_selection in action_space
 
               # Forward pass: Get action logits and value.
+              # We store a mapping between nodes in the local subgraph (which are numbered 0...n)
+              # and the agent IDs that correspond to them.
               out = policy(local_graph.x_dict, local_graph.edge_index_dict)
-              _logits = out['agent'][agent_i]
-              logits = _logits[action_availability]
+              my_index_in_local_subgraph = episode_step.local_feature_visible_agents[agent].index(agent)
+              logits = out['agent'][my_index_in_local_subgraph][action_space]
+
+              with torch.no_grad():
+                out_ref = policy_ref(local_graph.x_dict, local_graph.edge_index_dict)
+                logits_ref = out_ref['agent'][my_index_in_local_subgraph][action_space]
 
               out = valuefunction(global_graph.x_dict, global_graph.edge_index_dict)
               value = out['agent'].squeeze(-1)[agent_i]
 
-
-              with torch.no_grad():
-                out_ref = policy_ref(local_graph.x_dict, local_graph.edge_index_dict)
-                logits_ref = out_ref['agent'][agent_i][action_availability]
-
               # Store logprobs for executed policy
               logprobs = torch.log_softmax(logits, dim=-1)
               logprobs_ref = torch.log_softmax(logits_ref, dim=-1)
-              action_selection_index = action_availability.index(action_selection)
+              action_selection_index = action_space.index(action_selection)
               selected_action_logprobs.append(logprobs[action_selection_index])
               selected_action_logprobs_ref.append(logprobs_ref[action_selection_index])
 

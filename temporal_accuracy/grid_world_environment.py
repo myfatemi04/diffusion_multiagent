@@ -50,6 +50,14 @@ class GlobalState:
     width: int
     height: int
 
+@dataclass
+class Observation:
+    state: GlobalState
+    action_space: dict[str, list[int]]
+    reward: dict[str, float]
+    total_completed_tasks: int
+    done: bool = False
+
 class TaskSimulator:
     def __init__(self, grid: np.ndarray, tasks: list[Task], agents: list[str], agent_extrinsics: dict[str, AgentExtrinsics]):
         self._original_tasks = copy.deepcopy(tasks)
@@ -59,7 +67,7 @@ class TaskSimulator:
         self.agent_extrinsics = agent_extrinsics
         self.grid = grid
 
-    def reset(self) -> tuple[GlobalState, dict[str, list[int]], dict[str, float], bool]:
+    def reset(self) -> Observation:
         self.tasks = copy.deepcopy(self._original_tasks)
         # self.agent_extrinsics['agent:0'].x = np.random.randint(0, self.width)
         # self.agent_extrinsics['agent:0'].y = np.random.randint(0, self.height)
@@ -73,7 +81,13 @@ class TaskSimulator:
         reward = {agent: 0.0 for agent in self.agents}
         done = num_incomplete_tasks == 0
 
-        return (state, action_space, reward, done)
+        return Observation(
+            state=state,
+            action_space=action_space,
+            reward=reward,
+            total_completed_tasks=len(self.tasks) - num_incomplete_tasks,
+            done=done
+        )
 
     @property
     def width(self):
@@ -109,7 +123,7 @@ class TaskSimulator:
             height=self.height
         )
     
-    def step(self, action) -> tuple[GlobalState, dict[str, list[int]], dict[str, float], bool]:
+    def step(self, action) -> Observation:
         assert len(action) == len(self.agents), "Action vector must have the same length as the number of agents."
 
         rewards = {}
@@ -150,4 +164,10 @@ class TaskSimulator:
         action_space = self.valid_actions()
         done = num_incomplete_tasks == 0
 
-        return (state, action_space, rewards, done)
+        return Observation(
+            state=state,
+            action_space=action_space,
+            reward=rewards,
+            total_completed_tasks=len(self.tasks) - num_incomplete_tasks,
+            done=done
+        )

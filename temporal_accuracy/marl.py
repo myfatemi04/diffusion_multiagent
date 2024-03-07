@@ -9,6 +9,7 @@ class MultiAgentSARSTuple:
   global_state: E.GlobalState
   # next_global_state: E.GlobalState
   local_graph: dict[str, torch_geometric.data.HeteroData]
+  local_feature_visible_agents: dict[str, list[str]]
   global_graph: torch_geometric.data.HeteroData
   # next_global_graph: torch_geometric.data.HeteroData
   action_selection: dict[str, int]
@@ -16,6 +17,8 @@ class MultiAgentSARSTuple:
   action_probs: dict[str, torch.Tensor]
   reward: dict[str, float]
   done: bool
+  num_completed_tasks: int
+
   discounted_reward: dict[str, float] | None = None
 
 @dataclass
