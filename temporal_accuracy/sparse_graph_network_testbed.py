@@ -196,10 +196,10 @@ def main():
   )[0]
   
   # policy and q function will be separate for now
-  policy = SparseGraphNetworkWithPositionalEmbedding([64, 64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
+  policy = SparseGraphNetworkWithPositionalEmbedding([64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
   # policy_ref is for PPO.
-  policy_ref = SparseGraphNetworkWithPositionalEmbedding([64, 64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
-  valuefunction = SparseGraphNetworkWithPositionalEmbedding([64, 64, 64], head_dim=1).make_heterogeneous(dummy_global_features)
+  policy_ref = SparseGraphNetworkWithPositionalEmbedding([64, 64], head_dim=5).make_heterogeneous(dummy_local_features)
+  valuefunction = SparseGraphNetworkWithPositionalEmbedding([64, 64], head_dim=1).make_heterogeneous(dummy_global_features)
 
   optimizer = torch.optim.Adam([*policy.parameters(), *valuefunction.parameters()], lr=lr)
 
@@ -218,8 +218,8 @@ def main():
   # exponential decay from end epsilon to start epsilon over epsilon_decay episodes.
   # can think of this as a linear interpolation in logarithmic space.
   epsilon_ = lambda episode: np.exp(
-    np.log(start_epsilon) * (episode / epsilon_decay) + 
-    np.log(end_epsilon) * (1 - episode / epsilon_decay)
+    np.log(start_epsilon) * (1 - episode / epsilon_decay) + 
+    np.log(end_epsilon) * (episode / epsilon_decay)
   )
 
   try:

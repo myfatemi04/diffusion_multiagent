@@ -131,7 +131,7 @@ class TaskSimulator:
                 pos.y -= 1
 
             # Slightly penalize movements
-            rewards[agent_tag] = -0.05
+            # rewards[agent_tag] = -0.05
             
             assert (0 <= pos.x < self.width and 0 <= pos.y < self.height), f"Agent {agent_tag} tried to move out of bounds."
 
