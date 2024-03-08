@@ -251,7 +251,7 @@ class PursuitEvasionEnvironment:
     
     def step(self, action: torch.Tensor) -> Observation:
         active_mask = self._get_active_mask()
-        rewards = torch.zeros_like(action, device=self.device)
+        reward = torch.zeros_like(action, device=self.device)
 
         original_pursuer_positions: dict[int, tuple] = {}
         original_evader_positions: dict[int, tuple] = {}
@@ -317,13 +317,13 @@ class PursuitEvasionEnvironment:
         for pos, agent_indexes in target_pos_to_pursuer.items():
             if len(agent_indexes) > 1:
                 for agent_index in agent_indexes:
-                    rewards[agent_index] -= 0.1
+                    reward[agent_index] -= 0.1
                     target_pursuer_positions[agent_index] = original_pursuer_positions[agent_index]
         
         for pos, agent_indexes in target_pos_to_evader.items():
             if len(agent_indexes) > 1:
                 for agent in agent_indexes:
-                    rewards[agent] -= 0.1
+                    reward[agent] -= 0.1
                     target_evader_positions[agent_index] = original_evader_positions[agent_index]
 
         for evader in self.evaders:
@@ -335,13 +335,13 @@ class PursuitEvasionEnvironment:
             if target_evader_positions[evader_index] == self.evader_target_location:
                 self.successful_evaders.add(evader.id)
                 self.remaining_evaders.remove(evader.id)
-                rewards[evader_index] += 1.0
+                reward[evader_index] += 1.0
 
                 # Give a penalty to all pursuers. We don't actually know who was responsible for catching them, though.
                 # Maybe I can check out QMIX to try to resolve this problem.
                 for pursuer in self.pursuers:
                     pursuer_index = self.agent_order.index(pursuer.id)
-                    rewards[pursuer_index] -= 1.0
+                    reward[pursuer_index] -= 1.0
 
                 # If they reach the goal in the same turn as being "caught" by the pursuer,
                 # consider it as if they were never caught.
@@ -353,8 +353,8 @@ class PursuitEvasionEnvironment:
                 if target_pursuer_positions[pursuer_index] == target_evader_positions[evader_index]:
                     self.caught_evaders.add(evader.id)
                     self.remaining_evaders.remove(evader.id)
-                    rewards[pursuer_index] += 1.0
-                    rewards[evader_index] -= 1.0
+                    reward[pursuer_index] += 1.0
+                    reward[evader_index] -= 1.0
                     break
 
         done = len(self.remaining_evaders) == 0
@@ -362,7 +362,7 @@ class PursuitEvasionEnvironment:
         return Observation(
             state=self.get_state_copy(),
             action_space=self.get_action_space(),
-            reward=rewards,
+            reward=reward,
             observability_matrix=self.sample_observability_matrix(),
             done=done
         )

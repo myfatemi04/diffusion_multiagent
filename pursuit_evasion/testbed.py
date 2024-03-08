@@ -75,15 +75,9 @@ def calculate_value_function_loss(valuefunction: TransformerNetwork, episode: Mu
     for episode_step in episode.steps
   ]
   discounted_rewards_per_step = [
-    episode_step.discounted_reward[episode_step.active_mask]
+    episode_step.discounted_reward[episode_step.active_mask].to(valuefunction_per_step[0].device)
     for episode_step in episode.steps
   ]
-  print("VF:")
-  for vf in valuefunction_per_step:
-    print(vf.shape)
-  print("DR:")
-  for dr in discounted_rewards_per_step:
-    print(dr.shape)
   loss = F.smooth_l1_loss(
     torch.cat(valuefunction_per_step, dim=0),
     torch.cat(discounted_rewards_per_step, dim=0),
@@ -105,10 +99,10 @@ def calculate_policy_losses_for_agent(episode: MultiAgentEpisode, agent_i: int, 
 
     action_space = episode_step.action_space[agent_id]
     local_input_features = episode_step.local_input_features_per_agent[agent_id]
-    action_selection = episode_step.action_selection[agent_i]
+    action_selection = int(episode_step.action_selection[agent_i])
     
     assert local_input_features is not None and action_selection is not None, "Agent should have input features and action selection if it is active"
-    assert action_selection in action_space, "Action selection was not in action space"
+    assert action_selection in action_space, f"Action selection was not in action space. Action selection: {action_selection}. Action space: {action_space}"
 
     # Forward pass: Get action logits and value.
     # We store a mapping between nodes in the local subgraph (which are numbered 0...n)
@@ -145,7 +139,7 @@ def calculate_policy_losses_for_agent(episode: MultiAgentEpisode, agent_i: int, 
     step.discounted_reward[agent_i]
     for step in episode.steps
     if step.active_mask[agent_i]
-  ])
+  ]).to(values[0].device)
 
   # PPO loss
   ratios = selected_action_logprobs - selected_action_logprobs_ref

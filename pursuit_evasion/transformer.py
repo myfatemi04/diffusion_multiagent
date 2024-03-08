@@ -69,7 +69,8 @@ class TransformerNetwork(nn.Module):
         terrain_tokens = self.patchify(grid.unsqueeze(1))
         terrain_tokens_xy = torch.stack(torch.meshgrid(
             torch.arange(self.patch_size // 2, grid.shape[1], self.patch_size, device=grid.device),
-            torch.arange(self.patch_size // 2, grid.shape[2], self.patch_size, device=grid.device)
+            torch.arange(self.patch_size // 2, grid.shape[2], self.patch_size, device=grid.device),
+            indexing='ij',
         ), dim=-1).float()
         
         # Apply positional encoding to the terrain tokens

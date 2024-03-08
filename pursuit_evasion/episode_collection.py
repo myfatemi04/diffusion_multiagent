@@ -67,6 +67,7 @@ def collect_episode(
         selection = torch.multinomial(action_probs_per_agent[agent.id], 1)
         action_selection_per_agent[agent_i] = action_space[int(selection)] # type: ignore # for action_probs_per_agent[agent.id]
         local_input_features_per_agent[agent.id] = local_input_features
+
     # end agent loop
     # select active agent ids and put them in the global state
     global_input_features = (
@@ -94,4 +95,4 @@ def collect_episode(
     if next_obs.done:
       break
 
-  return MultiAgentEpisode(list(environment.agent_map), steps)
+  return MultiAgentEpisode(obs.state.agent_order, steps)
