@@ -164,7 +164,7 @@ def collect_episode(
 
   steps: list[MultiAgentSARSTuple] = []
 
-  is_artificial_episode = torch.rand(()).item() < 0.1
+  is_artificial_episode = False # torch.rand(()).item() < 0.01
 
   # run for a max of 20 steps per episode
   for episode_step in range(40):
@@ -275,7 +275,7 @@ def main():
   end_epsilon = 0.005
   epsilon_decay = 500
 
-  entropy_weight = 1e-3
+  entropy_weight = 5e-3
 
   layer_sizes = [64, 64, 64]
 
