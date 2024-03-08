@@ -144,8 +144,18 @@ class PursuitEvasionEnvironment:
         # go through each pair of pursuers and evaders
         # make a stochastic decision about whether the pursuer can see the evader
         likelihood_matrix = torch.zeros((len(self.agent_order), len(self.agent_order)), device=self.device, dtype=torch.float32)
+        active_mask = self._get_active_mask()
+
         for i, observer in enumerate(self.agent_order):
+            if not active_mask[i]:
+                # the likelihoods will remain as 0
+                continue
+
             for j, observed in enumerate(self.agent_order):
+                if not active_mask[j]:
+                    # the likelihoods will remain as 0
+                    continue
+
                 if observer == observed:
                     likelihood_matrix[i, j] = 1.0
                     continue

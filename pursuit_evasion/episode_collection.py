@@ -16,9 +16,10 @@ def collect_episode(
 
   for episode_step in range(40):
     # Create feature vectors for each agent
-    active_agent_ids = [agent_id for agent_id in obs.state.agent_map.keys() if obs.action_space[agent_id] is not None]
-    agent_positions_vector = torch.tensor([obs.state.agent_positions[agent_id].tuple for agent_id in active_agent_ids], device=device)
-    agent_teams_vector = torch.tensor([0 if obs.state.agent_map[agent_id].team == 'pursuer' else 1 for agent_id in active_agent_ids], device=device)
+    # active_agent_ids = [agent_id for i, agent_id in enumerate(obs.state.agent_order) if obs.state.active_mask[i]]
+    # We'll store the positions and teams of all agents, but only care about the agents where active_mask is on.
+    agent_positions_vector = torch.tensor([obs.state.agent_positions[agent_id].tuple for agent_id in obs.state.agent_order], device=device)
+    agent_teams_vector = torch.tensor([0 if obs.state.agent_map[agent_id].team == 'pursuer' else 1 for agent_id in obs.state.agent_order], device=device)
 
     # Simultaneously generate an action for all agents
     action_selection_per_agent = torch.zeros(len(obs.state.agent_order), device=device)
@@ -69,8 +70,8 @@ def collect_episode(
     # end agent loop
     # select active agent ids and put them in the global state
     global_input_features = (
-      agent_positions_vector.unsqueeze(0),
-      agent_teams_vector.unsqueeze(0),
+      agent_positions_vector[obs.state.active_mask].unsqueeze(0),
+      agent_teams_vector[obs.state.active_mask].unsqueeze(0),
       torch.tensor(obs.state.evader_target_location, device=device).unsqueeze(0),
       obs.state.grid.unsqueeze(0),
     )

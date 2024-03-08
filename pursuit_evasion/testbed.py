@@ -71,13 +71,19 @@ def visualize_episode(episode: MultiAgentEpisode):
 def calculate_value_function_loss(valuefunction: TransformerNetwork, episode: MultiAgentEpisode):
   # Input features are restricted to agents in the `active_mask`.
   valuefunction_per_step: list[torch.Tensor] = [
-    valuefunction(episode_step.global_input_features)[0, :, 0]
+    valuefunction(*episode_step.global_input_features)[0, :, 0]
     for episode_step in episode.steps
   ]
   discounted_rewards_per_step = [
     episode_step.discounted_reward[episode_step.active_mask]
     for episode_step in episode.steps
   ]
+  print("VF:")
+  for vf in valuefunction_per_step:
+    print(vf.shape)
+  print("DR:")
+  for dr in discounted_rewards_per_step:
+    print(dr.shape)
   loss = F.smooth_l1_loss(
     torch.cat(valuefunction_per_step, dim=0),
     torch.cat(discounted_rewards_per_step, dim=0),
