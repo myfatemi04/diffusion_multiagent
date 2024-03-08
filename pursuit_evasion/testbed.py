@@ -113,10 +113,9 @@ def collect_episode(
       action_selection_per_agent,
       obs.action_space,
       action_probs_per_agent,
-      obs.reward,
+      next_obs.reward,
       next_obs.done,
     ))
-
     obs = next_obs
 
     if next_obs.done:
@@ -296,6 +295,12 @@ def main():
             values = []
             entropies = []
 
+            # discounted_rewards_for_agent = [
+            #   step.discounted_reward[agent_id] # type: ignore
+            #   for step in episode.steps
+            # ]
+            # print(discounted_rewards_for_agent)
+
             # Aggregate relevant information from episode
             for step_i, episode_step in enumerate(episode.steps):
               action_space = episode_step.action_space[agent_id]
@@ -308,7 +313,7 @@ def main():
                   local_input_features is None and \
                     action_selection is None and \
                     episode.steps[step_i].discounted_reward[agent_id] is None # type: ignore
-                ), "Agent should have no input features, action selection, or discounted reward if it is not active"
+                ), "Agent should have no input features, action selection, or discounted reward if it is not active. agent_id: " + agent_id + ", step_i: " + str(step_i) + ", action_selection: " + str(action_selection) + ", discounted_reward: " + str(episode.steps[step_i].discounted_reward[agent_id]) # type: ignore
                 continue
               
               assert local_input_features is not None and action_selection is not None, "Agent should have input features and action selection if it is active"

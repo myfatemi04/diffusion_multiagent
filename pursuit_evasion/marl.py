@@ -18,7 +18,7 @@ class MultiAgentSARSTuple:
   reward: dict[str, float]
   done: bool
 
-  discounted_reward: dict[str, float] | None = None
+  discounted_reward: dict[str, float | None] | None = None
 
 @dataclass
 class MultiAgentEpisode:
@@ -30,11 +30,11 @@ class MultiAgentEpisode:
       discounted_reward = 0
       for step in reversed(self.steps):
         # reward is None after the agent has been inactivated
-        reward = step.reward[agent]
-        if reward is None:
-          continue
-        # add to discounted reward
-        discounted_reward = reward + gamma * discounted_reward
         if step.discounted_reward is None:
           step.discounted_reward = {}
-        step.discounted_reward[agent] = discounted_reward
+        reward = step.reward[agent]
+        if reward is None:
+          step.discounted_reward[agent] = None
+        else:
+          # update the running total for discounted reward
+          step.discounted_reward[agent] = reward + gamma * discounted_reward
