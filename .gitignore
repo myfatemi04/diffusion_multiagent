@@ -5,3 +5,4 @@ diffusion_policy
 CBBA-Python
 **/runs
 wandb
+slurm*
