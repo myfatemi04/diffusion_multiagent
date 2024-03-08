@@ -241,7 +241,8 @@ def main():
         for episode in episodes
       ) / len(episodes)
       mean_episode_length = sum(len(episode.steps) for episode in episodes) / len(episodes)
-      mean_completed_tasks = sum(len(episode.steps[-1].global_state.successful_evaders) for episode in episodes) / len(episodes)
+      mean_reached_goal = sum(len(episode.steps[-1].global_state.successful_evaders) for episode in episodes) / len(episodes)
+      mean_caught_evaders = sum(len(episode.steps[-1].global_state.caught_evaders) for episode in episodes) / len(episodes)
 
       # Backpropagation
       total_policy_loss = 0
@@ -408,7 +409,8 @@ def main():
         'loss': (total_policy_loss + total_qfunction_loss) / num_loss_accumulations,
         'policy_loss': total_policy_loss / num_loss_accumulations,
         'qfunction_loss': total_qfunction_loss / num_loss_accumulations,
-        'completed_tasks': mean_completed_tasks,
+        'reached_goal': mean_reached_goal,
+        'caught_evaders': mean_caught_evaders,
       })
   except Exception as e:
     print(e)
