@@ -293,6 +293,24 @@ def main():
 
           episode.populate_discounted_rewards(discount_factor)
 
+          valuefunction_per_step = [
+            valuefunction(*episode_step.global_input_features[1:])[0, :, 0]
+            for episode_step in episode.steps
+          ]
+          discounted_rewards_per_step = [
+            torch.tensor([
+              episode_step.discounted_reward[agent_id] # type: ignore
+              for agent_id in episode_step.global_input_features[0]
+            ], device=device)
+            for episode_step in episode.steps
+          ]
+          vf_loss = sum(
+            (F.smooth_l1_loss(vf, discounted_rewards)
+            for vf, discounted_rewards in zip(valuefunction_per_step, discounted_rewards_per_step)),
+            start=torch.tensor(0.0, device=device)
+          ) / len(valuefunction_per_step)
+          vf_loss.backward()
+
           # calculate policy loss for each agent one at a time
           for agent_i in range(len(episode.agents)):
 
@@ -320,8 +338,6 @@ def main():
               assert local_input_features is not None and action_selection is not None, "Agent should have input features and action selection if it is active"
               assert action_selection in action_space
 
-              (active_agents, *global_input_features) = episode_step.global_input_features
-
               # Forward pass: Get action logits and value.
               # We store a mapping between nodes in the local subgraph (which are numbered 0...n)
               # and the agent IDs that correspond to them.
@@ -345,11 +361,15 @@ def main():
               entropy = -torch.sum(logprobs * torch.exp(logprobs), dim=-1)
               entropies.append(entropy)
 
+              (active_agents, *global_input_features) = episode_step.global_input_features
+              my_index = active_agents.index(agent_id)
+              # Store predicted value for this step (pre-computed, but added to an array through this loop)
+              values.append(valuefunction_per_step[step_i][my_index])
+
               # enumerate(episode.steps)
 
             selected_action_logprobs = torch.stack(selected_action_logprobs)
             selected_action_logprobs_ref = torch.stack(selected_action_logprobs_ref).detach()
-            values = torch.stack(values)
             entropies = torch.stack(entropies)
   
             discounted_rewards = torch.tensor([
@@ -361,7 +381,7 @@ def main():
             # PPO loss
             ratios = selected_action_logprobs - selected_action_logprobs_ref
             clipped_ratios = torch.clamp(ratios, -0.2, 0.2)
-            advantage = discounted_rewards - values.detach()
+            advantage = discounted_rewards - torch.stack(values).detach()
 
             # print advantage per action
             if ppo_iter == 0 and plot_graph:
@@ -387,24 +407,6 @@ def main():
             num_loss_accumulations += 1
 
             # end range(len(environment.agents))
-
-          valuefunction_per_step = [
-            valuefunction(*episode_step.global_input_features[1:])[0, :, 0]
-            for episode_step in episode.steps
-          ]
-          discounted_rewards_per_step = [
-            torch.tensor([
-              episode_step.discounted_reward[agent_id] # type: ignore
-              for agent_id in episode_step.global_input_features[0]
-            ], device=device)
-            for episode_step in episode.steps
-          ]
-          vf_loss = sum(
-            (F.smooth_l1_loss(vf, discounted_rewards)
-            for vf, discounted_rewards in zip(valuefunction_per_step, discounted_rewards_per_step)),
-            start=torch.tensor(0.0, device=device)
-          ) / len(valuefunction_per_step)
-          vf_loss.backward()
 
           # end iteration over episodes
 
