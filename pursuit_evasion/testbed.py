@@ -11,13 +11,15 @@ Approach:
 import copy
 import random
 import sys
+import os
+import traceback
 
 from matplotlib import pyplot as plt
 import numpy as np
+from PIL.Image import Image
 import torch
 import torch.nn.functional as F
 import wandb
-import traceback
 
 from marl import MultiAgentEpisode
 from episode_collection import collect_episode
@@ -41,32 +43,6 @@ def log_reward_statistics(episodes: list[MultiAgentEpisode]):
     'successful_evaders': mean_reached_goal,
     'caught_evaders': mean_caught_evaders,
   })
-
-def visualize_episode(episode: MultiAgentEpisode):
-  for step in episode.steps:
-    print("reward:", step.reward)
-    print("done:", step.done)
-    print("probs:", step.action_probs)
-    print("selection:", step.action_selection)
-    plt.title("Episode Visualizer")
-    visualizer.render_scene(
-      {
-        agent_id: {
-          "xy": (step.global_state.agent_positions[agent_id].x, step.global_state.agent_positions[agent_id].y),
-          "color": "red",
-          "action_probs": step.action_probs[agent_id].tolist(), # type: ignore
-          # "action_values": action_values_per_agent[agent].tolist(),
-        }
-        for agent_id in episode.agents
-        if step.action_space[agent_id] is not None
-      },
-      {
-        f"target": {
-          "xy": step.global_state.evader_target_location,
-          "color": "blue"
-        }
-      },
-    )
 
 def calculate_value_function_loss(valuefunction: TransformerNetwork, episode: MultiAgentEpisode):
   # Input features are restricted to agents in the `active_mask`.
@@ -262,6 +238,39 @@ def main():
   environments = [copy.deepcopy(environment) for _ in range(n_batch_episodes)]
 
   #endregion
+
+  # Play an episode
+  policy.load_state_dict(torch.load('policy.pt', map_location=device))
+  valuefunction.load_state_dict(torch.load('qfunction.pt', map_location=device))
+
+  episode = collect_episode(environments[0], policy, device)
+  images = visualizer.visualize_episode(episode)
+
+  # Plot number of active evaders at any given time
+  for i in range(len(episode.steps)):
+    active_count = 0
+    locations = []
+    for agent_i, agent_id in enumerate(episode.agents):
+      if episode.steps[i].active_mask[agent_i]:
+        agent = episode.steps[i].global_state.agent_map[agent_id]
+        is_evader = agent.team == "evader"
+        if is_evader:
+          active_count += 1
+          locations.append(episode.steps[i].global_state.agent_positions[agent_id].tuple)
+    print("active:", active_count, locations)
+
+  if not os.path.exists('outputs/ep000'):
+    os.makedirs('outputs/ep000')
+
+  for i, image in enumerate(images):
+    # :3d is necessary
+    image.save(f'outputs/ep000/image_{i:03d}.png')
+
+  os.chdir('outputs/ep000')
+  os.system("ffmpeg -y -framerate 10 -pattern_type glob -i '*.png' -c:v libx264 -pix_fmt yuv420p out.mp4 && rm *.png")
+  os.chdir('../..')
+
+  return
 
   try:
     for train_step in range(n_batches):

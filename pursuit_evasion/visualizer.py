@@ -1,5 +1,10 @@
+import io
+from typing import Literal
+
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt
+from marl import MultiAgentEpisode
+from PIL import Image
 
 HSV = cm.get_cmap("hsv")
 inferno = cm.get_cmap("inferno")
@@ -57,6 +62,8 @@ def render_scene(
     agents,
     tasks,
     node_size=5,
+    grid_size=(10, 10),
+    method: Literal['gui', 'pil'] = 'gui',
     # image_size,
     # edge_colors=(120, 120, 120),
     # outline_colors=(50, 50, 50),
@@ -74,7 +81,7 @@ def render_scene(
         for i, prob in enumerate(action_probs):
             if prob > 0:
                 dx, dy = [(0, 0), (1, 0), (0, 1), (-1, 0), (0, -1)][i]
-                print(i, prob, dx, dy)
+                # print(i, prob, dx, dy)
                 plt.arrow(position[0], position[1], dx * prob, dy * prob, color=color, head_width=0.05, head_length=0.1)
     
     for tag, info in tasks.items():
@@ -84,8 +91,53 @@ def render_scene(
         plt.plot(position[0], position[1], 'o', color=color, markersize=node_size)
     
     # set equal aspect ratio
-    plt.xlim(-0.5, 10.5)
-    plt.ylim(-0.5, 10.5)
+    plt.xlim(-0.5, grid_size[0] + 0.5)
+    plt.ylim(-0.5, grid_size[1] + 0.5)
     plt.gca().set_aspect('equal')
-    plt.show()
 
+    if method == 'gui':
+        plt.show()
+    elif method == 'pil':
+        # return PIL image
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        buf.seek(0)
+
+        image = Image.open(buf)
+
+        plt.clf()
+
+        return image
+
+def visualize_episode(episode: MultiAgentEpisode):
+  images: list[Image.Image] = []
+
+  plt.rcParams["figure.figsize"] = (10, 10)
+
+  for step in episode.steps:
+    plt.clf()
+    plt.title("Episode Visualizer")
+    image = render_scene(
+      {
+        agent_id: {
+          "xy": (step.global_state.agent_positions[agent_id].x, step.global_state.agent_positions[agent_id].y),
+          "color": "red" if step.global_state.agent_map[agent_id].team == "pursuer" else "blue",
+          "action_probs": step.action_probs[agent_id].tolist(), # type: ignore
+          # "action_values": action_values_per_agent[agent].tolist(),
+        }
+        for i, agent_id in enumerate(episode.agents)
+        if step.active_mask[i]
+      },
+      {
+        f"target": {
+          "xy": step.global_state.evader_target_location,
+          "color": "green"
+        }
+      },
+      grid_size=step.global_state.grid.shape,
+      method='pil'
+    )
+    assert image is not None, "Image should not be None when method='pil'"
+    images.append(image)
+  
+  return images
