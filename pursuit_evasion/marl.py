@@ -9,11 +9,11 @@ class MultiAgentSARSTuple:
   # next_global_state: E.GlobalState
   # caches the input features for each agent that were used to calculate the policy at this timestep
   local_input_features_per_agent: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None]
-  global_input_features: tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+  global_input_features: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
   # next_global_graph: torch_geometric.data.HeteroData
   action_selection: torch.Tensor
-  action_space: dict[str, list[int] | None]
-  action_probs: dict[str, torch.Tensor | None]
+  action_space: dict[str, list[int]]
+  action_probs: dict[str, torch.Tensor]
   active_mask: torch.Tensor
   reward: torch.Tensor
   done: bool

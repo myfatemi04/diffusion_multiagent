@@ -67,9 +67,9 @@ class GlobalState:
 @dataclass
 class Observation:
     state: GlobalState
-    action_space: dict[str, list[int] | None] # None represents that the agent is inactive
+    action_space: dict[str, list[int]]
     observability_matrix: torch.Tensor
-    reward: dict[str, float]
+    reward: torch.Tensor
     done: bool = False
 
 """
@@ -141,22 +141,20 @@ class PursuitEvasionEnvironment:
         return base_value * coefficient
 
     def sample_observability_matrix(self) -> torch.Tensor:
-        observability_matrix = torch.zeros((len(self.agent_order), len(self.agent_order)), dtype=torch.bool)
-
         # go through each pair of pursuers and evaders
         # make a stochastic decision about whether the pursuer can see the evader
+        likelihood_matrix = torch.zeros((len(self.agent_order), len(self.agent_order)), device=self.device, dtype=torch.float32)
         for i, observer in enumerate(self.agent_order):
             for j, observed in enumerate(self.agent_order):
                 if observer == observed:
-                    observability_matrix[i, j] = True
+                    likelihood_matrix[i, j] = 1.0
                     continue
 
                 observer_pos = self.agent_extrinsics[observer]
                 observed_pos = self.agent_extrinsics[observed]
-                likelihood = self.get_observation_likelihood(observer_pos, observed_pos)
-                observability_matrix[i, j] = bool(np.random.rand() < likelihood)
-        
-        return observability_matrix
+                likelihood_matrix[i, j] = self.get_observation_likelihood(observer_pos, observed_pos)
+
+        return torch.rand_like(likelihood_matrix, device=self.device) < likelihood_matrix
 
     def reset(self) -> Observation:
         self.agent_extrinsics = copy.deepcopy(self._original_agent_extrinsics)
@@ -167,8 +165,8 @@ class PursuitEvasionEnvironment:
         self.caught_evaders = set()
         state = self.get_state_copy()
         action_space = self.get_action_space()
-        reward = {agent.id: 0.0 for agent in [*self.pursuers, *self.evaders]}
-        done = len(self.caught_evaders) + len(self.successful_evaders) == len(self.evaders)
+        reward = torch.zeros(len(self.agent_order), device=self.device)
+        done = False
 
         return Observation(
             state=state,
@@ -187,40 +185,40 @@ class PursuitEvasionEnvironment:
         return self.grid.shape[0]
 
     """ Determine the action space for each agent. """
-    def get_action_space(self) -> dict[str, list[int] | None]:
-        actions = {}
+    def get_action_space(self) -> dict[str, list[int]]:
+        action_space = {}
 
         for agent in self.pursuers:
             agent_id = agent.id
             pos = self.agent_extrinsics[agent_id]
-            actions[agent_id] = [0]
+            action_space[agent_id] = [0]
             if pos.x < self.width - 1:
-                actions[agent_id].append(1)
+                action_space[agent_id].append(1)
             if pos.y < self.height - 1:
-                actions[agent_id].append(2)
+                action_space[agent_id].append(2)
             if pos.x > 0:
-                actions[agent_id].append(3)
+                action_space[agent_id].append(3)
             if pos.y > 0:
-                actions[agent_id].append(4)
+                action_space[agent_id].append(4)
 
         for agent in self.evaders:
             agent_id = agent.id
             if agent_id in self.caught_evaders or agent_id in self.successful_evaders:
-                actions[agent_id] = None
+                action_space[agent_id] = []
                 continue
 
             pos = self.agent_extrinsics[agent_id]
-            actions[agent_id] = [0]
+            action_space[agent_id] = [0]
             if pos.x < self.width - 1:
-                actions[agent_id].append(1)
+                action_space[agent_id].append(1)
             if pos.y < self.height - 1:
-                actions[agent_id].append(2)
+                action_space[agent_id].append(2)
             if pos.x > 0:
-                actions[agent_id].append(3)
+                action_space[agent_id].append(3)
             if pos.y > 0:
-                actions[agent_id].append(4)
+                action_space[agent_id].append(4)
         
-        return actions
+        return action_space
     
     def _get_active_mask(self):
         return torch.tensor([agent not in self.caught_evaders and agent not in self.successful_evaders for agent in self.agent_order], device=self.device, dtype=torch.bool)
@@ -245,80 +243,89 @@ class PursuitEvasionEnvironment:
         active_mask = self._get_active_mask()
         rewards = torch.zeros_like(action, device=self.device)
 
-        original_pursuer_positions = {agent.id: self.agent_extrinsics[agent.id].tuple for agent in self.pursuers}
-        original_evader_positions = {agent.id: self.agent_extrinsics[agent.id].tuple for agent in self.evaders}
-        target_pursuer_positions = {}
-        target_evader_positions = {}
-        target_pos_to_pursuer: dict[tuple[int, int], list] = {}
-        target_pos_to_evader: dict[tuple[int, int], list] = {}
+        original_pursuer_positions: dict[int, tuple] = {}
+        original_evader_positions: dict[int, tuple] = {}
+        target_pursuer_positions: dict[int, tuple] = {}
+        target_evader_positions: dict[int, tuple] = {}
+        target_pos_to_pursuer: dict[tuple[int, int], list[int]] = {}
+        target_pos_to_evader: dict[tuple[int, int], list[int]] = {}
 
         # Iterate through pursuers. Pursuers move first.
         for i, agent in enumerate(self.pursuers):
-            agent_index = self.agent_order.index(agent.id)
+            pursuer_index = self.agent_order.index(agent.id)
             pos = self.agent_extrinsics[agent.id]
-            if action[agent_index] == 1:
+
+            original_pursuer_positions[pursuer_index] = pos.tuple
+
+            if action[pursuer_index] == 1:
                 pos.x += 1
-            if action[agent_index] == 2:
+            if action[pursuer_index] == 2:
                 pos.y += 1
-            if action[agent_index] == 3:
+            if action[pursuer_index] == 3:
                 pos.x -= 1
-            if action[agent_index] == 4:
+            if action[pursuer_index] == 4:
                 pos.y -= 1
 
             assert (0 <= pos.x < self.width and 0 <= pos.y < self.height), f"Agent {agent} tried to move out of bounds."
 
-            target_pursuer_positions[agent_index] = pos.tuple
+            target_pursuer_positions[pursuer_index] = pos.tuple
             if pos.tuple not in target_pos_to_pursuer:
-                target_pos_to_pursuer[pos.tuple] = [agent_index]
+                target_pos_to_pursuer[pos.tuple] = [pursuer_index]
             else:
-                target_pos_to_pursuer[pos.tuple].append(agent_index)
+                target_pos_to_pursuer[pos.tuple].append(pursuer_index)
 
         # Iterate through evaders.
         for i, agent in enumerate(self.evaders):
-            agent_index = self.agent_order.index(agent.id)
+            evader_index = self.agent_order.index(agent.id)
             pos = self.agent_extrinsics[agent.id]
-            if action[agent_index] == 1:
+
+            if not active_mask[evader_index]:
+                continue
+
+            original_evader_positions[evader_index] = pos.tuple
+
+            if action[evader_index] == 1:
                 pos.x += 1
-            if action[agent_index] == 2:
+            if action[evader_index] == 2:
                 pos.y += 1
-            if action[agent_index] == 3:
+            if action[evader_index] == 3:
                 pos.x -= 1
-            if action[agent_index] == 4:
+            if action[evader_index] == 4:
                 pos.y -= 1
 
             assert (0 <= pos.x < self.width and 0 <= pos.y < self.height), f"Agent {agent} tried to move out of bounds."
 
-            target_evader_positions[agent_index] = pos.tuple
+            target_evader_positions[evader_index] = pos.tuple
             if pos.tuple not in target_pos_to_evader:
-                target_pos_to_evader[pos.tuple] = [agent_index]
+                target_pos_to_evader[pos.tuple] = [evader_index]
             else:
-                target_pos_to_evader[pos.tuple].append(agent_index)
+                target_pos_to_evader[pos.tuple].append(evader_index)
         
         # To deal with collisions:
         # Apply a -1 penalty for agents that collide into each other, and do not move either of them.
         # Check for collisions within the same team.
-        for pos, agents in target_pos_to_pursuer.items():
-            if len(agents) > 1:
-                for agent in agents:
-                    rewards[agent] -= 0.1
-                    target_pursuer_positions[agent] = original_pursuer_positions[agent]
+        for pos, agent_indexes in target_pos_to_pursuer.items():
+            if len(agent_indexes) > 1:
+                for agent_index in agent_indexes:
+                    rewards[agent_index] -= 0.1
+                    target_pursuer_positions[agent_index] = original_pursuer_positions[agent_index]
         
-        for pos, agents in target_pos_to_evader.items():
-            if len(agents) > 1:
-                for agent in agents:
+        for pos, agent_indexes in target_pos_to_evader.items():
+            if len(agent_indexes) > 1:
+                for agent in agent_indexes:
                     rewards[agent] -= 0.1
-                    target_evader_positions[agent] = original_evader_positions[agent]
+                    target_evader_positions[agent_index] = original_evader_positions[agent_index]
 
         for evader in self.evaders:
-            agent_index = self.agent_order.index(evader.id)
-            if not active_mask[agent_index]:
+            evader_index = self.agent_order.index(evader.id)
+            if not active_mask[evader_index]:
                 continue
             
             # Check to see if they reached the goal location.
-            if target_evader_positions[evader.id] == self.evader_target_location:
+            if target_evader_positions[evader_index] == self.evader_target_location:
                 self.successful_evaders.add(evader.id)
                 self.remaining_evaders.remove(evader.id)
-                rewards[agent_index] += 1.0
+                rewards[evader_index] += 1.0
 
                 # Give a penalty to all pursuers. We don't actually know who was responsible for catching them, though.
                 # Maybe I can check out QMIX to try to resolve this problem.
@@ -333,7 +340,7 @@ class PursuitEvasionEnvironment:
             # Check to see if they were caught by a pursuer.
             for pursuer in self.pursuers:
                 pursuer_index = self.agent_order.index(pursuer.id)
-                if target_pursuer_positions[pursuer.id] == target_evader_positions[evader.id]:
+                if target_pursuer_positions[pursuer_index] == target_evader_positions[evader_index]:
                     self.caught_evaders.add(evader.id)
                     self.remaining_evaders.remove(evader.id)
                     rewards[pursuer_index] += 1.0
