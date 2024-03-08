@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 
 import torch
-import torch_geometric.data
 import grid_world_environment as E
 
 @dataclass
