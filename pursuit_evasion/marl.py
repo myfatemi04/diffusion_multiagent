@@ -11,13 +11,15 @@ class MultiAgentSARSTuple:
   local_input_features_per_agent: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None]
   global_input_features: tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
   # next_global_graph: torch_geometric.data.HeteroData
-  action_selection: dict[str, int | None]
+  action_selection: torch.Tensor
   action_space: dict[str, list[int] | None]
   action_probs: dict[str, torch.Tensor | None]
-  reward: dict[str, float]
+  active_mask: torch.Tensor
+  reward: torch.Tensor
   done: bool
 
-  discounted_reward: dict[str, float | None] | None = None
+  discounted_reward: torch.Tensor
+  has_discounted_reward: bool
 
 @dataclass
 class MultiAgentEpisode:
@@ -25,15 +27,6 @@ class MultiAgentEpisode:
   steps: list[MultiAgentSARSTuple]
 
   def populate_discounted_rewards(self, gamma: float):
-    for agent in self.agents:
-      discounted_reward = 0
-      for step in reversed(self.steps):
-        # reward is None after the agent has been inactivated
-        if step.discounted_reward is None:
-          step.discounted_reward = {}
-        reward = step.reward[agent]
-        if reward is None:
-          step.discounted_reward[agent] = None
-        else:
-          # update the running total for discounted reward
-          step.discounted_reward[agent] = reward + gamma * discounted_reward
+    self.has_discounted_reward = True
+    for step_i in reversed(range(len(self.steps))):
+      self.steps[step_i].discounted_reward = self.steps[step_i].reward + ((gamma * self.steps[step_i + 1].discounted_reward) if step_i + 1 < len(self.steps) else 0)

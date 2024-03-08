@@ -90,8 +90,8 @@ def main():
       E.Agent('evader1', 'evader'),
     ],
     agent_extrinsics={
-      'pursuer0': E.AgentExtrinsics(5, 1),
-      'pursuer1': E.AgentExtrinsics(5, 31),
+      'pursuer0': E.AgentExtrinsics(5, 7),
+      'pursuer1': E.AgentExtrinsics(5, 25),
       'evader0': E.AgentExtrinsics(1, 7),
       'evader1': E.AgentExtrinsics(1, 25),
     },
@@ -107,12 +107,6 @@ def main():
   valuefunction.to(device)
 
   optimizer = torch.optim.Adam([*policy.parameters(), *valuefunction.parameters()], lr=lr)
-
-  # Graph construction parameters
-  qfunction_agent_task_connectivity_radius = 20
-  qfunction_agent_agent_connectivity_radius = 20
-  policy_agent_agent_connectivity_radius = 10
-  policy_agent_task_connectivity_radius = 10
 
   # exponential decay from end epsilon to start epsilon over epsilon_decay episodes.
   # can think of this as a linear interpolation in logarithmic space.
@@ -174,7 +168,8 @@ def main():
             },
           )
 
-      num_loss_accumulations = 0
+      num_qfunction_loss_accumulations = 0
+      num_policy_loss_accumulations = 0
 
       for ppo_iter in range(n_ppo_iterations):
         optimizer.zero_grad()
@@ -182,8 +177,6 @@ def main():
         discount_factor = 0.99
 
         for episode in episodes:
-          print("train_step: episode backprop")
-
           episode.populate_discounted_rewards(discount_factor)
 
           valuefunction_per_step = [
@@ -203,6 +196,8 @@ def main():
             start=torch.tensor(0.0, device=device)
           ) / len(valuefunction_per_step)
           vf_loss.backward()
+          total_qfunction_loss += vf_loss.item()
+          num_qfunction_loss_accumulations += 1
 
           # calculate policy loss for each agent one at a time
           for agent_i in range(len(episode.agents)):
@@ -297,7 +292,7 @@ def main():
             agent_policy_loss.backward()
 
             total_policy_loss += actor_loss.item()
-            num_loss_accumulations += 1
+            num_policy_loss_accumulations += 1
 
             # end range(len(environment.agents))
 
@@ -314,9 +309,8 @@ def main():
         'epsilon': epsilon,
         'total_reward': mean_episode_reward,
         'episode_length': mean_episode_length,
-        'loss': (total_policy_loss + total_qfunction_loss) / num_loss_accumulations,
-        'policy_loss': total_policy_loss / num_loss_accumulations,
-        'qfunction_loss': total_qfunction_loss / num_loss_accumulations,
+        'policy_loss': total_policy_loss / num_policy_loss_accumulations,
+        'qfunction_loss': total_qfunction_loss / num_qfunction_loss_accumulations,
         'reached_goal': mean_reached_goal,
         'caught_evaders': mean_caught_evaders,
       })
