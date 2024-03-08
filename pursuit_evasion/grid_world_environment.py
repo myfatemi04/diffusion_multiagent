@@ -101,10 +101,6 @@ class PursuitEvasionEnvironment:
         self.grid = grid # 1 if forest, 0 if clear
         self.step_counter = 0
 
-        # Store historical observations per agent
-        # (i.e. pursuer 1 has observed agent X at location Y at time t - 5)
-        self.observations_by_agent = {}
-
         # the chance of viewing decays by 1/2 every 10 steps
         # if you are only 5 steps away, you are guaranteed to see the other agent
         # make the probability of observation decay linearly

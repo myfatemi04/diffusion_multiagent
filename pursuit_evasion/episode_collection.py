@@ -9,12 +9,14 @@ def collect_episode(
   environment: E.PursuitEvasionEnvironment,
   policy: TransformerNetwork,
   device: torch.device,
+  max_episode_length: int = 40,
+  max_lookbehind_time: int = 5,
 ):
   obs = environment.reset()
 
   steps: list[MultiAgentSARSTuple] = []
 
-  for episode_step in range(40):
+  for episode_step in range(max_episode_length):
     # Create feature vectors for each agent
     # active_agent_ids = [agent_id for i, agent_id in enumerate(obs.state.agent_order) if obs.state.active_mask[i]]
     # We'll store the positions and teams of all agents, but only care about the agents where active_mask is on.
@@ -57,6 +59,7 @@ def collect_episode(
           agent_positions_vector[visible_agent_indexes].unsqueeze(0),
           agent_teams_vector[visible_agent_indexes].unsqueeze(0),
           evader_target_location_tensor.unsqueeze(0),
+          # TODO: Add "observation ages"
           obs.state.grid.unsqueeze(0),
         )
         # first 0 is for batch, second 0 is for agent token (token index 0 is "ego")

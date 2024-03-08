@@ -18,6 +18,9 @@ class TransformerNetwork(nn.Module):
         # Use a separate positional encoding module for agent positions
         self.agent_positional_encoding = PositionalEncoding(n_position_dims=2, n_encoding_dims=d_model)
 
+        # Temporal encoding for observations
+        self.observation_temporal_encoding = PositionalEncoding(n_position_dims=1, n_encoding_dims=d_model)
+
         # Have an additive embedding for whether the agent is a pursuer or an evader
         self.team_encoding = nn.Embedding(2, d_model)
 
@@ -49,16 +52,44 @@ class TransformerNetwork(nn.Module):
             nn.Linear(d_model, num_outputs)
         )
 
-    def forward(self, agent_locations, agent_teams, target_location, grid):
+    def forward(self,
+                agent_location_observations,
+                agent_team_observations,
+                observation_ages,
+                target_location,
+                grid):
         """
+        We imagine a case where we can consider a sort of "working memory"
+        represented by historical observations that are tagged according to
+        when they were observed.
+
+        A scenario where we could test this would be to inject historical
+        observations of an evader moving offscreen. The pursuer would then need
+        to choose the correct direction to move based on its working memory,
+        even after the evader leaves the observation window.
+
+        We encode the observation age through sinusoidal positional encoding.
+        We may at some point want to use some filtering methods to remove
+        unnecessary observations from working memory.
+
+        The notion of an "observation age" might also be useful when considering
+        observations of certain terrain features.
+
         shapes:
-        - agent_locations: (batch_size, num_agents, 2)
-        - agent_teams: (batch_size, num_agents)
+        - agent_location_observations: (batch_size, num_obs, 2)
+        - agent_team_observations: (batch_size, num_obs)
+        - observation_ages: (batch_size, num_obs)
         - target_location: (batch_size, 2)
         - grid: (batch_size, grid_size, grid_size)
 
         only functional for batch_size of 1
         """
+
+        # print("::: Forward pass :::")
+        # print("agent_locations:", agent_location_observations.shape)
+        # print("agent_teams:", agent_team_observations.shape)
+        # print("target_location:", target_location.shape)
+        # print("grid:", grid.shape)
 
         # Sanity checks
         assert grid.shape[1] % self.patch_size == 0, "Grid size must be divisible by patch size. Grid height was " + str(grid.shape[1])
@@ -78,7 +109,10 @@ class TransformerNetwork(nn.Module):
         terrain_tokens = terrain_tokens + self.tile_positional_encoding(terrain_tokens_xy)
 
         # Create agent tokens
-        agent_tokens = self.agent_positional_encoding(agent_locations) + self.team_encoding(agent_teams)
+        agent_observation_tokens = \
+            self.agent_positional_encoding(agent_location_observations) + \
+            self.team_encoding(agent_team_observations) + \
+            self.observation_temporal_encoding(observation_ages.unsqueeze(-1))
 
         # Create target token
         target_tokens = self.target_position_positional_encoding(target_location).unsqueeze(1)
@@ -88,14 +122,14 @@ class TransformerNetwork(nn.Module):
         # print(target_tokens.shape)
 
         # Concatenate the tokens
-        tokens = torch.cat([agent_tokens, terrain_tokens, target_tokens], dim=1)
+        tokens = torch.cat([agent_observation_tokens, terrain_tokens, target_tokens], dim=1)
 
         # Apply transformer encoder
         tokens = self.transformer_encoder(tokens)
 
         # Project the agent tokens to the output space
         # This will be the policy and value function
-        output = self.mlp(tokens[:, :agent_locations.shape[1], :])
+        output = self.mlp(tokens[:, :agent_location_observations.shape[1], :])
 
         return output
 
