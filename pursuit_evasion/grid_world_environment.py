@@ -52,6 +52,7 @@ class AgentExtrinsics:
 @dataclass
 class GlobalState:
     grid: torch.Tensor
+    agent_map: dict[str, Agent]
     pursuers: list[Agent]
     evaders: list[Agent]
     agent_positions: dict[str, AgentExtrinsics]
@@ -59,6 +60,7 @@ class GlobalState:
     height: int
     successful_evaders: set[str]
     caught_evaders: set[str]
+    evader_target_location: tuple[int, int]
 
 @dataclass
 class Observation:
@@ -82,6 +84,7 @@ class PursuitEvasionEnvironment:
                  evader_target_location: tuple[int, int]):
 
         self._original_agent_extrinsics = copy.deepcopy(agent_extrinsics)
+        self.agent_map = {agent.id: agent for agent in agents}
         self.pursuers = [agent for agent in agents if agent.team == 'pursuer']
         self.evaders = [agent for agent in agents if agent.team == 'evader']
         self.agent_extrinsics = agent_extrinsics
@@ -146,7 +149,7 @@ class PursuitEvasionEnvironment:
                 observer_pos = self.agent_extrinsics[observer]
                 observed_pos = self.agent_extrinsics[observed]
                 likelihood = self.get_observation_likelihood(observer_pos, observed_pos)
-                observability_matrix[i, j] = np.random.rand() < likelihood
+                observability_matrix[i, j] = bool(np.random.rand() < likelihood)
         
         return agent_order, observability_matrix
 
@@ -183,37 +186,40 @@ class PursuitEvasionEnvironment:
         actions = {}
 
         for agent in self.pursuers:
-            pos = self.agent_extrinsics[agent.id]
-            actions[agent] = [0]
+            agent_id = agent.id
+            pos = self.agent_extrinsics[agent_id]
+            actions[agent_id] = [0]
             if pos.x < self.width - 1:
-                actions[agent].append(1)
+                actions[agent_id].append(1)
             if pos.y < self.height - 1:
-                actions[agent].append(2)
+                actions[agent_id].append(2)
             if pos.x > 0:
-                actions[agent].append(3)
+                actions[agent_id].append(3)
             if pos.y > 0:
-                actions[agent].append(4)
+                actions[agent_id].append(4)
 
         for agent in self.evaders:
-            if agent.id in self.caught_evaders or agent.id in self.successful_evaders:
-                actions[agent.id] = None
+            agent_id = agent.id
+            if agent_id in self.caught_evaders or agent_id in self.successful_evaders:
+                actions[agent_id] = None
                 continue
 
-            pos = self.agent_extrinsics[agent.id]
-            actions[agent] = [0]
+            pos = self.agent_extrinsics[agent_id]
+            actions[agent_id] = [0]
             if pos.x < self.width - 1:
-                actions[agent].append(1)
+                actions[agent_id].append(1)
             if pos.y < self.height - 1:
-                actions[agent].append(2)
+                actions[agent_id].append(2)
             if pos.x > 0:
-                actions[agent].append(3)
+                actions[agent_id].append(3)
             if pos.y > 0:
-                actions[agent].append(4)
+                actions[agent_id].append(4)
         
         return actions
     
     def get_state_copy(self):
         return GlobalState(
+            agent_map=self.agent_map,
             grid=self.grid,
             pursuers=self.pursuers,
             evaders=self.evaders,
@@ -222,12 +228,17 @@ class PursuitEvasionEnvironment:
             height=self.height,
             caught_evaders={*self.caught_evaders},
             successful_evaders={*self.successful_evaders},
+            evader_target_location=self.evader_target_location
         )
     
-    def step(self, action: dict[str, int]) -> Observation:
+    def step(self, action: dict[str, int | None]) -> Observation:
         assert len(action) == len(self.pursuers) + len(self.evaders), "Action vector must have the same length as the number of agents. If an agent has been inactivated, set `None` as their action."
 
-        rewards = {aid: 0.0 for aid in action.keys()}
+        rewards: dict[str, float] = {aid: 0.0 for aid in action.keys()}
+
+        for agent in self.evaders:
+            if agent.id in self.caught_evaders or agent.id in self.successful_evaders:
+                rewards[agent.id] = None # type: ignore
 
         original_pursuer_positions = {agent.id: self.agent_extrinsics[agent.id].tuple for agent in self.pursuers}
         original_evader_positions = {agent.id: self.agent_extrinsics[agent.id].tuple for agent in self.evaders}
